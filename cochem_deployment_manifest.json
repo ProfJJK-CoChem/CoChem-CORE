@@ -1,0 +1,37 @@
+{
+    "schema_version": "2026.1",
+    "deployment_context": "CoChem-CORE",
+    "deployment_methodology": [
+        "github",
+        "codespaces",
+        "devcontainer",
+        "docker",
+        "wsl2_native",
+        "linux_native"
+    ],
+    "active_modules": [
+        "CoChem-CORE"
+    ],
+    "repositories": {
+        "CoChem-CORE": "https://github.com/ProfJJK/CoChem-CORE",
+        "CoChem-UNITY": "https://github.com/ProfJJK/CoChem-UNITY",
+        "CoChem-MInt": "https://github.com/ProfJJK/CoChem-MInt",
+        "CoChem-TOPOS": "https://github.com/ProfJJK/CoChem-TOPOS",
+        "CoChem-TORQ": "https://github.com/ProfJJK/CoChem-TORQ",
+        "CoChem-SCAN": "https://github.com/ProfJJK/CoChem-SCAN",
+        "CoChem-SpycFit": "https://github.com/ProfJJK/CoChem-SpycFit",
+        "CoChem-SHIFT": "https://github.com/ProfJJK/CoChem-SHIFT",
+        "CoChem-MAGE": "https://github.com/ProfJJK/CoChem-MAGE",
+        "CoChem-LUMOS": "https://github.com/ProfJJK/CoChem-LUMOS",
+        "CoChem-NODE": "https://github.com/ProfJJK/CoChem-NODE",
+        "CoChem-ORACLE": "https://github.com/ProfJJK/CoChem-ORACLE",
+        "CoChem-SCRIBE": "https://github.com/ProfJJK/CoChem-SCRIBE",
+        "CoChem-DOCK": "https://github.com/ProfJJK/CoChem-DOCK"
+    },
+    "minimum_hardware_requirements": {
+        "ram_gb": 16.0,
+        "disk_free_gb": 20.0,
+        "os_target": "linux_x86_64"
+    },
+    "llm_features_enabled": false
+}
