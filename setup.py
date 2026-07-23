@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
 CoChem Master Deployment Orchestrator
-Sequentially triggers the CoChem environment initialization.
-Halts gracefully if any sub-phase throws a fatal error.
+Sequentially triggers the CoChem environment initialization and micro-silo provisioning.
+Halts gracefully if any sub-phase throws a fatal error, enforcing the authoritative 
+cochem_system_config.json specification.
 """
+
 import os
 import sys
 import subprocess
@@ -19,55 +21,49 @@ class Colors:
 
 def print_banner():
     print(f"\n{Colors.HEADER}{Colors.BOLD}======================================================{Colors.ENDC}")
-    print(f"{Colors.HEADER}{Colors.BOLD} CoChem Pipeline: Master Initialization {Colors.ENDC}")
+    print(f"{Colors.HEADER}{Colors.BOLD} CoChem Pipeline: Master Environment Orchestrator       {Colors.ENDC}")
     print(f"{Colors.HEADER}{Colors.BOLD}======================================================{Colors.ENDC}\n")
 
-def run_phase(script_name: str, phase_desc: str) -> bool:
-    """Executes a setup phase and monitors its return code."""
-    if not os.path.exists(script_name):
-        print(f"{Colors.FAIL}❌ FATAL: Cannot find {script_name} in the root directory.{Colors.ENDC}")
-        return False
+def run_phase(script_name, description):
+    print(f"{Colors.BOLD}[ORCHESTRATOR] Starting Phase: {description} ({script_name}){Colors.ENDC}")
+    script_path = os.path.join("cochem_setup", script_name)
     
-    print(f"{Colors.OKGREEN}▶ Starting {phase_desc} ({script_name})...{Colors.ENDC}")
+    if not os.path.exists(script_path):
+        print(f"{Colors.FAIL}[FATAL] Missing required script: {script_path}{Colors.ENDC}")
+        sys.exit(1)
+        
     try:
-        # check=True forces a CalledProcessError if the script fails, protecting downstream steps
-        subprocess.run([sys.executable, script_name], check=True)
-        print(f"{Colors.OKGREEN}✅ Successfully completed {phase_desc}.{Colors.ENDC}\n")
-        return True
+        result = subprocess.run([sys.executable, script_path], check=True)
+        print(f"{Colors.OKGREEN}[SUCCESS] Completed Phase: {description}{Colors.ENDC}\n")
     except subprocess.CalledProcessError as e:
-        print(f"{Colors.FAIL}❌ FATAL: {script_name} failed with return code {e.returncode}.{Colors.ENDC}")
-        return False
-    except KeyboardInterrupt:
-        print(f"\n{Colors.WARNING}⚠️ Pipeline forcefully halted by user.{Colors.ENDC}")
-        return False
+        print(f"{Colors.FAIL}[FATAL] Phase failed with exit code {e.returncode}{Colors.ENDC}")
+        sys.exit(1)
 
 def main():
     print_banner()
     
-    # Official CoChem Topology 1 Sequence
+    # Ensure cochem_setup directory exists
+    if not os.path.exists("cochem_setup"):
+        print(f"{Colors.FAIL}[FATAL] 'cochem_setup/' directory not found in current path.{Colors.ENDC}")
+        sys.exit(1)
+
     phases = [
-        ("cochem_setup_1_sys.py", "Phase 1: OS & Hypervisor Audit"),
-        ("cochem_setup_2_hw.py", "Phase 2: Hardware, RAM, & CPU Mapping"),
-        ("cochem_setup_3_engines.py", "Phase 3: Deep Engine Verification"),
-        ("cochem_setup_4_silos.py", "Phase 4: Dynamic Silo Generation"),
-        ("cochem_setup_5_finalize.py", "Phase 5: IPC Config Lock & Finalize"),
-        ("cochem_setup_10_intake_align.py", "Phase 10: Intake & Alignment"),
-        ("cochem_setup_11_memory_router.py", "Phase 11: Memory Router & Tiering")
+        ("cochem_setup_1_sys.py", "OS & Hypervisor Audit"),
+        ("cochem_setup_2_hw.py", "Hardware, RAM, & CPU Topology Mapping"),
+        ("cochem_setup_3_engines.py", "ORCA, OpenMPI, & xTB Binary Verification"),
+        ("cochem_setup_4_silos.py", "Dynamic Micro-Silo Generation & Silo Binding"),
+        ("cochem_setup_5_finalize.py", "Inter-Process Communication (IPC) Config Lock"),
+        ("cochem_setup_10_intake_align.py", "Intake & Alignment Tooling (Eckart/MolSym)"),
+        ("cochem_setup_11_memory_router.py", "Memory Router & Tiering Configuration")
     ]
-    
+
+    start_time = time.time()
     for script, desc in phases:
-        # If a phase is missing, we log it and halt to prevent silent fallback errors
-        if not run_phase(script, desc):
-            print(f"{Colors.WARNING}⚠️ Pipeline halted during {desc}. Fix errors and restart.{Colors.ENDC}")
-            sys.exit(1)
-            
-    print(f"{Colors.HEADER}{Colors.BOLD}======================================================{Colors.ENDC}")
-    print(f"{Colors.OKGREEN}{Colors.BOLD} CoChem Setup Successfully Completed! {Colors.ENDC}")
-    print(f"{Colors.HEADER}{Colors.BOLD}======================================================{Colors.ENDC}\n")
+        run_phase(script, desc)
+        
+    elapsed = time.time() - start_time
+    print(f"{Colors.OKGREEN}{Colors.BOLD}🏁 COCHEM-CORE DEPLOYMENT COMPLETE in {elapsed:.2f} seconds!{Colors.ENDC}")
+    print(f"{Colors.BOLD}Authoritative registry written to: cochem_system_config.json{Colors.ENDC}")
 
 if __name__ == "__main__":
-    # Ensure the user is running this from the correct root directory
-    if not os.path.exists("cochem_setup_1_sys.py"):
-        print(f"{Colors.FAIL}Error: setup.py must be run from the directory containing the cochem_setup_*.py scripts.{Colors.ENDC}")
-        sys.exit(1)
     main()
