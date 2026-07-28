@@ -1,0 +1,22 @@
+{
+  "name": "CoChem-CORE Environment",
+  "build": {
+    "dockerfile": "../Dockerfile"
+  },
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/bin/python3.11",
+        "python.formatting.provider": "black",
+        "editor.formatOnSave": true
+      },
+      "extensions": [
+        "ms-python.python",
+        "ms-toolsai.jupyter",
+        "ms-python.black-formatter"
+      ]
+    }
+  },
+  "remoteUser": "vscode",
+  "postCreateCommand": "pip install -r requirements.txt"
+}

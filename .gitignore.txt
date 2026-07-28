@@ -1,0 +1,58 @@
+﻿=====================================================================
+CoChem-CORE: Filesystem Air-Gap Policy
+=====================================================================
+Explicitly ignores dynamic user data, massive wavefunctions, and local registries.
+1. Dynamic User Artifacts & Provisioned Directories
+CoChem_Artifacts/
+Scratch/
+Input_Files/
+Processed/
+Logs/
+cochem_task_queue/
+2. Quantum Data & Massive Matrices
+*.h5
+*.hdf5
+*.gbw
+*.out
+*.tmp
+*.chk
+*.npy
+*.npz
+*.parquet
+3. Local Ephemeral Registries & Locks
+cochem_system_config.json
+cochem_setup/cochem_state_*.json
+registry.json
+fit_provenance.json
+.cochem_workspace.lock
+.cochem_unity.lock
+4. Standard Python & Environment Noise
+pycache/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+.env
+.venv
+venv/
+ENV/
