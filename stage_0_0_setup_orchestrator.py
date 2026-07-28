@@ -25,13 +25,13 @@ class Colors:
 
 # Define the exact execution sequence matching the CoChem architecture
 PHASE_MANIFEST = [
-    (1, "cochem_setup_phase_1.py", "OS/Hypervisor Audit"),
-    (2, "cochem_setup_phase_2.py", "Hardware, RAM, & CPU Mapping"),
-    (3, "cochem_setup_phase_3.py", "Engine Binary Validation (ORCA, OpenMPI, g-xTB)"),
-    (4, "cochem_setup_phase_4.py", "Silo Generation & Python 3.11 Enforcer"),
-    (5, "cochem_setup_phase_5.py", "IPC Config Lock & Workspace Sweep"),
-    (10, "cochem_setup_phase_10.py", "Eckart Frame & MolSym Intake"),
-    (11, "cochem_setup_phase_11.py", "Memory Router & Adaptive Tiering")
+    (1, ".\cochem_setup\cochem_setup_phase_1.py", "OS/Hypervisor Audit"),
+    (2, ".\cochem_setup\cochem_setup_phase_2.py", "Hardware, RAM, & CPU Mapping"),
+    (3, ".\cochem_setup\cochem_setup_phase_3.py", "Engine Binary Validation (ORCA, OpenMPI, g-xTB)"),
+    (4, ".\cochem_setup\cochem_setup_phase_4.py", "Silo Generation & Python 3.11 Enforcer"),
+    (5, ".\cochem_setup\cochem_setup_phase_5.py", "IPC Config Lock & Workspace Sweep"),
+    (10, ".\cochem_setup\cochem_setup_phase_10.py", "Eckart Frame & MolSym Intake"),
+    (11, ".\cochem_setup\cochem_setup_phase_11.py", "Memory Router & Adaptive Tiering")
 ]
 
 def verify_integrity(base_dir: Path) -> bool:

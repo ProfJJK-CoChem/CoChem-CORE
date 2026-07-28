@@ -1,0 +1,51 @@
+{
+    "schema_version": "1.0.0",
+    "last_updated": "2026-07-28T22:17:26.271140",
+    "hardware": {
+        "physical_cpu_cores": 16,
+        "logical_cpu_cores": 24,
+        "ram_gb": 63.8,
+        "avx512_support": false,
+        "gpu_profile": "NVIDIA GeForce RTX 3090",
+        "vram_gb": 24.0,
+        "subnormal_precision_trap": false,
+        "os_target": "linux_x86_64"
+    },
+    "engines": {
+        "orca": {
+            "status": "missing",
+            "path": null,
+            "version": null,
+            "hash": null
+        },
+        "mpirun": {
+            "status": "missing",
+            "path": null,
+            "version": null,
+            "hash": null
+        },
+        "xtb": {
+            "status": "missing",
+            "path": null,
+            "version": null,
+            "hash": null
+        }
+    },
+    "silos": {
+        "torq_silo_active": false,
+        "gpu_silo_active": false
+    },
+    "adaptive_routing": {
+        "max_concurrent_mace_threads": 4,
+        "max_dft_basis_functions": 4000,
+        "recommend_ccsdt": true,
+        "classification": "WORKSTATION_GPU"
+    },
+    "hpc": {
+        "scheduler": "local",
+        "default_partition": "compute",
+        "max_walltime_hours": 24
+    },
+    "alignment_engine_ready": true,
+    "active_jobs": {}
+}
