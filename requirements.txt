@@ -1,21 +1,10 @@
-﻿=====================================================================
-CoChem-CORE: Master Baseline Dependencies
-Required for Dockerfile and devcontainer.json bootstrapping
-=====================================================================
-Hardware Telemetry & System Profiling
-psutil>=5.9.0
-Strict Schema Validation & Registry Parsing
+﻿psutil>=5.9.0
 pydantic>=2.4.2
-Immutable Database Serialization
 h5py>=3.10.0
-API / WebSocket Frontend Bridges (CoChem-DOCK / UNITY)
 fastapi>=0.104.1
 uvicorn>=0.23.2
-Quantum Input Scaffolding
 jinja2>=3.1.2
-Element/Isotope Data Lookups
 mendeleev>=0.14.0
-Core Structural Math & Connectivity
 numpy>=1.26.0
 scipy>=1.11.3
 networkx>=3.1

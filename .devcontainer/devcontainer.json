@@ -1,7 +1,7 @@
 {
   "name": "CoChem-CORE Environment",
   "build": {
-    "dockerfile": "../Dockerfile"
+    "dockerfile": "../docker.dockerfile"
   },
   "customizations": {
     "vscode": {
