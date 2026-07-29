@@ -33,63 +33,72 @@ def verify_execution(binary_path: str, version_flag: str = "--version") -> bool:
         return False
 
 def locate_system_orca():
-    """Hypervisor-Aware ORCA Binary Hunt across Windows Host, WSL2, macOS, and Linux."""
-    print("➡️  Checking for system-wide ORCA...")
+    """Hypervisor-Aware ORCA Binary Hunt using Direct Host Mount Scanning."""
+    print("➡️  Checking for system-wide ORCA via direct mount scanning...")
     
     orca_path = None
 
     # 1. Check Native Windows (If executing outside the orchestrator constraint)
     if sys.platform == "win32":
-        try:
-            res = subprocess.run(["powershell", "-Command", "(Get-Command orca).Source"], capture_output=True, text=True)
-            if res.returncode == 0 and res.stdout.strip():
-                orca_path = res.stdout.strip()
-        except Exception:
-            pass
-        if not orca_path:
+        orca_path = shutil.which("orca")
+        if orca_path:
+            return str(Path(orca_path).resolve())
+
+    # 2. Host Mount Scan (Bypasses Subprocess Interop completely)
+    print("➡️  Scanning known host mounts (/mnt/c/, /host_mnt/c/, /c/)...")
+    
+    # Common mount points for Windows C: drive in Docker/WSL
+    host_mounts = [Path("/mnt/c"), Path("/host_mnt/c"), Path("/c")]
+    
+    # Standard installation targets on Windows
+    search_dirs = [
+        "orca",
+        "ORCA",
+        "Program Files/orca",
+        "Program Files/ORCA",
+        "Program Files (x86)/orca"
+    ]
+
+    for mount in host_mounts:
+        if mount.exists():
+            print(f"🔍 Host filesystem mount detected at: {mount}")
+            # Fast check of standard directories
+            for search_dir in search_dirs:
+                target_dir = mount / search_dir
+                if target_dir.exists():
+                    potential_bin = target_dir / "orca.exe"
+                    if potential_bin.exists():
+                        orca_path = str(potential_bin.resolve())
+                        print(f"✅ Host Windows ORCA discovered via direct mount at: {orca_path}")
+                        print("⚠️  WARNING: Bridging Windows ORCA (.exe) into Linux drops OpenMPI efficiency.")
+                        return orca_path
+            
+            # Shallow recursive fallback (Depth=2) to catch custom version folders like C:\orca_6_1_1\
+            print("🔍 Standard paths empty. Executing shallow recursive scan on host drive...")
             try:
-                res = subprocess.run(["where", "orca"], capture_output=True, text=True)
-                if res.returncode == 0 and res.stdout.strip():
-                    orca_path = res.stdout.strip().split('\n')[0]
-            except Exception:
+                for root, dirs, files in os.walk(mount, topdown=True):
+                    # Restrict depth to prevent scanning the entire Windows drive
+                    depth = root[len(str(mount)):].count(os.sep)
+                    if depth > 2:
+                        dirs.clear()
+                        continue
+                    if "orca.exe" in files:
+                        orca_path = str(Path(root) / "orca.exe")
+                        print(f"✅ Host Windows ORCA discovered via shallow scan at: {orca_path}")
+                        print("⚠️  WARNING: Bridging Windows ORCA (.exe) into Linux drops OpenMPI efficiency.")
+                        return orca_path
+            except PermissionError:
                 pass
 
-    # 2. Check WSL2 / Microsoft Hypervisor (Linux querying the Windows Host)
-    elif sys.platform == "linux":
-        try:
-            with open("/proc/version", "r") as f:
-                version_info = f.read().lower()
-                
-            if "microsoft" in version_info or "wsl" in version_info:
-                print("➡️  WSL2 Hypervisor Detected. Querying Windows 11 Host...")
-                res = subprocess.run(["powershell.exe", "-Command", "(Get-Command orca.exe).Source"], capture_output=True, text=True)
-                
-                if res.returncode == 0 and res.stdout.strip():
-                    win_path = res.stdout.strip()
-                    # Translate Windows C:\ path to Linux /mnt/c/ path
-                    path_conv = subprocess.run(["wslpath", "-a", win_path], capture_output=True, text=True)
-                    if path_conv.returncode == 0:
-                        orca_path = path_conv.stdout.strip()
-                        print(f"✅ Host Windows ORCA detected and translated to: {orca_path}")
-                        print("⚠️  WARNING: Bridging Windows ORCA (.exe) into Linux can occasionally disable OpenMPI parallelization.")
-        except Exception:
-            pass
+    if not any(m.exists() for m in host_mounts) and sys.platform != "win32":
+        print("⚠️  WARNING: No Windows host mounts detected. Ensure your devcontainer.json binds the C: drive.")
 
     # 3. Standard Linux / macOS / Docker DevContainer Internal Check
-    if not orca_path:
-        try:
-            res = subprocess.run(["which", "orca"], capture_output=True, text=True)
-            if res.returncode == 0 and res.stdout.strip():
-                orca_path = res.stdout.strip()
-        except Exception:
-            pass
-            
-    # Ultimate Python-native fallback
     if not orca_path:
         orca_path = shutil.which("orca")
         
     if orca_path and Path(orca_path).exists():
-        if sys.platform != "win32" and not orca_path.endswith(".exe"):
+        if sys.platform != "win32" and not str(orca_path).endswith(".exe"):
              print(f"✅ Native Linux ORCA detected at: {orca_path}")
         return str(Path(orca_path).resolve())
         
@@ -305,7 +314,7 @@ def main():
     
     engines_dir = Path.home() / ".cochem" / "engines"
     
-    # 1. ORCA Pathing & Deployment (Hypervisor-Aware)
+    # 1. ORCA Pathing & Deployment (Direct Mount Scan)
     orca_bin = locate_system_orca()
     if not orca_bin:
         print("⚠️  System ORCA missing. Triggering automated deployment...")

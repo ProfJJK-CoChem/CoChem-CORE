@@ -1,20 +1,20 @@
 {
-    "phase": 3,
     "engines": {
         "orca": {
-            "status": "missing",
-            "path": "None",
-            "version": "6.1.1"
+            "path": "/home/vscode/.cochem/engines/orca_6_1_1/orca_6_1_1_linux_x86-64_shared_openmpi418_avx2/orca",
+            "sha256": "d65fe8fe3136e0008de9e5784ab8d853b0ef51a02635d7d6fb0f6a1c95d648d1"
         },
-        "mpirun": {
-            "status": "verified",
+        "openmpi": {
             "path": "/usr/bin/mpirun",
-            "version": "4.1.6"
+            "sha256": "aad9e80dbde91273d09490a5b6de513b02ef3d4bc8d709fedf3e822ee9e7bda8"
         },
-        "xtb": {
-            "status": "verified",
-            "path": "/home/vscode/CoChem_Artifacts/Registry/Engines/xtb_bin/xtb-dist/share/xtb",
-            "version": "latest"
+        "g_xtb": {
+            "path": "/home/vscode/.cochem/engines/g_xtb/xtb-6.6.1/bin/xtb",
+            "sha256": "3a4fb07254a1097076d6eb4526330621505f5677bf4fcb6165e835a8d940c5f4"
+        },
+        "crest": {
+            "path": null,
+            "sha256": "N/A"
         }
     }
 }
