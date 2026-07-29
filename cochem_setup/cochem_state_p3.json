@@ -1,0 +1,20 @@
+{
+    "phase": 3,
+    "engines": {
+        "orca": {
+            "status": "missing",
+            "path": "None",
+            "version": "6.1.1"
+        },
+        "mpirun": {
+            "status": "verified",
+            "path": "/usr/bin/mpirun",
+            "version": "4.1.6"
+        },
+        "xtb": {
+            "status": "verified",
+            "path": "/home/vscode/CoChem_Artifacts/Registry/Engines/xtb_bin/xtb-dist/share/xtb",
+            "version": "latest"
+        }
+    }
+}
