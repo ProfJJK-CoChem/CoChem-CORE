@@ -27,17 +27,18 @@ def verify_execution(binary_path: str, version_flag: str = "--version") -> bool:
     if not binary_path or not Path(binary_path).exists():
         return False
     try:
-        # Some binaries print to stderr, some to stdout. We check if it runs without a lib/dependency error.
         res = subprocess.run([binary_path, version_flag], capture_output=True, text=True, timeout=10)
         return res.returncode == 0 or "version" in res.stdout.lower() or "version" in res.stderr.lower() or res.returncode == 1
     except Exception:
         return False
 
 def locate_system_orca():
-    """OS-Aware ORCA Binary Hunt across Windows (PS/CMD), macOS, and Linux."""
+    """Hypervisor-Aware ORCA Binary Hunt across Windows Host, WSL2, macOS, and Linux."""
     print("➡️  Checking for system-wide ORCA...")
     
     orca_path = None
+
+    # 1. Check Native Windows (If executing outside the orchestrator constraint)
     if sys.platform == "win32":
         try:
             res = subprocess.run(["powershell", "-Command", "(Get-Command orca).Source"], capture_output=True, text=True)
@@ -45,7 +46,6 @@ def locate_system_orca():
                 orca_path = res.stdout.strip()
         except Exception:
             pass
-            
         if not orca_path:
             try:
                 res = subprocess.run(["where", "orca"], capture_output=True, text=True)
@@ -53,7 +53,30 @@ def locate_system_orca():
                     orca_path = res.stdout.strip().split('\n')[0]
             except Exception:
                 pass
-    else:
+
+    # 2. Check WSL2 / Microsoft Hypervisor (Linux querying the Windows Host)
+    elif sys.platform == "linux":
+        try:
+            with open("/proc/version", "r") as f:
+                version_info = f.read().lower()
+                
+            if "microsoft" in version_info or "wsl" in version_info:
+                print("➡️  WSL2 Hypervisor Detected. Querying Windows 11 Host...")
+                res = subprocess.run(["powershell.exe", "-Command", "(Get-Command orca.exe).Source"], capture_output=True, text=True)
+                
+                if res.returncode == 0 and res.stdout.strip():
+                    win_path = res.stdout.strip()
+                    # Translate Windows C:\ path to Linux /mnt/c/ path
+                    path_conv = subprocess.run(["wslpath", "-a", win_path], capture_output=True, text=True)
+                    if path_conv.returncode == 0:
+                        orca_path = path_conv.stdout.strip()
+                        print(f"✅ Host Windows ORCA detected and translated to: {orca_path}")
+                        print("⚠️  WARNING: Bridging Windows ORCA (.exe) into Linux can occasionally disable OpenMPI parallelization.")
+        except Exception:
+            pass
+
+    # 3. Standard Linux / macOS / Docker DevContainer Internal Check
+    if not orca_path:
         try:
             res = subprocess.run(["which", "orca"], capture_output=True, text=True)
             if res.returncode == 0 and res.stdout.strip():
@@ -61,11 +84,13 @@ def locate_system_orca():
         except Exception:
             pass
             
+    # Ultimate Python-native fallback
     if not orca_path:
         orca_path = shutil.which("orca")
         
     if orca_path and Path(orca_path).exists():
-        print(f"✅ ORCA natively detected at: {orca_path}")
+        if sys.platform != "win32" and not orca_path.endswith(".exe"):
+             print(f"✅ Native Linux ORCA detected at: {orca_path}")
         return str(Path(orca_path).resolve())
         
     return None
@@ -114,7 +139,7 @@ def deploy_airgapped_orca():
             bin_path = Path(root) / bin_name
             if sys.platform != "win32":
                 bin_path.chmod(0o755)
-            print(f"✅ Successfully deployed and pathed ORCA to: {bin_path}")
+            print(f"✅ Successfully deployed and pathed internal DevContainer ORCA to: {bin_path}")
             return str(bin_path.resolve())
             
     return None
@@ -151,7 +176,6 @@ def install_openmpi(silo_dir: Path) -> str:
         subprocess.run(["make", "-j", str(os.cpu_count() or 4)], cwd=src_dir, check=True, capture_output=True)
         subprocess.run(["make", "install"], cwd=src_dir, check=True, capture_output=True)
         
-        # Disk Cleanup Protocol
         shutil.rmtree(src_dir, ignore_errors=True)
         tar_path.unlink(missing_ok=True)
         
@@ -187,7 +211,7 @@ def install_xtb(silo_dir: Path) -> str:
         with tarfile.open(tar_path, "r:xz") as tar:
             tar.extractall(path=xtb_silo)
             
-        tar_path.unlink(missing_ok=True) # Disk Cleanup Protocol
+        tar_path.unlink(missing_ok=True) 
             
         if xtb_bin.exists():
             xtb_bin.chmod(0o755)
@@ -225,7 +249,7 @@ def install_crest(silo_dir: Path, xtb_path: str) -> str:
         with tarfile.open(tar_path, "r:xz") as tar:
             tar.extractall(path=crest_silo)
             
-        tar_path.unlink(missing_ok=True) # Disk Cleanup Protocol
+        tar_path.unlink(missing_ok=True)
         
         extracted_bin = crest_silo / "crest" 
         if not extracted_bin.exists():
@@ -236,7 +260,6 @@ def install_crest(silo_dir: Path, xtb_path: str) -> str:
 
         if extracted_bin.exists():
             extracted_bin.chmod(0o755)
-            # CREST requires xTB in the path to run properly, verify with injected path
             env = os.environ.copy()
             if xtb_path:
                 env["PATH"] = f"{Path(xtb_path).parent}:{env.get('PATH', '')}"
@@ -282,7 +305,7 @@ def main():
     
     engines_dir = Path.home() / ".cochem" / "engines"
     
-    # 1. ORCA Pathing & Deployment
+    # 1. ORCA Pathing & Deployment (Hypervisor-Aware)
     orca_bin = locate_system_orca()
     if not orca_bin:
         print("⚠️  System ORCA missing. Triggering automated deployment...")
@@ -293,10 +316,9 @@ def main():
         print("Please place the ORCA .tar.xz or .tz file in ~/CoChem_Artifacts/Registry/Engines/ and retry.")
         sys.exit(1)
         
-    # Execution Sanity Check for ORCA
     if not verify_execution(orca_bin):
-        print(f"❌ FATAL: ORCA binary found at {orca_bin} but failed execution.")
-        print("This usually indicates missing dependencies like OpenMPI. Proceeding to fix dependencies...")
+        print(f"⚠️  WARNING: ORCA binary found at {orca_bin} but failed initial execution test.")
+        print("If this is a bridged Windows .exe, it may require explicit input files to respond.")
         
     # 2. OpenMPI Pathing & Deployment
     mpi_bin = shutil.which("mpirun")
@@ -312,7 +334,7 @@ def main():
     elif sys.platform != "win32":
         xtb_bin = install_xtb(engines_dir)
 
-    # 4. CREST Pathing & Deployment (Critical for conformational sampling)
+    # 4. CREST Pathing & Deployment 
     crest_bin = shutil.which("crest")
     if crest_bin and verify_execution(crest_bin):
         print(f"✅ System CREST natively detected and verified at: {crest_bin}")
