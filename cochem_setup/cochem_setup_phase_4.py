@@ -1,10 +1,11 @@
+# cochem_canvas_target: cochem_setup/cochem_setup_phase_4.py
 #!/usr/bin/env python3
 """
 CoChem-CORE Setup Phase 4: Dynamic Orchestration & Silo Generation
 Implements aggressive dependency upgrading for standard libraries and
 high-risk C++ bindings via isolated Conda micro-environments.
 Dynamically reads cochem_deployment_manifest.json to avoid installing
-unnecessary multi-gigabyte GPU tensors.
+unnecessary multi-gigabyte GPU tensors. Includes an Active Conda Bootstrapper.
 """
 
 import os
@@ -13,6 +14,7 @@ import json
 import logging
 import subprocess
 import shutil
+import urllib.request
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 
@@ -38,134 +40,210 @@ def print_status(msg: str, status: str = "info") -> None:
     else:
         print(f" {Colors.OKCYAN}➡️ {msg}{Colors.ENDC}")
 
-def setup_logging() -> logging.Logger:
+def setup_phase4_logging() -> logging.Logger:
     """Initializes the diagnostic rotating logger."""
-    log_dir = "Logs"
-    os.makedirs(log_dir, exist_ok=True)
+    artifact_dir = os.environ.get("COCHEM_ARTIFACT_DIR", str(Path.home() / "CoChem_Artifacts"))
+    log_dir = Path(artifact_dir) / "Logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    
+    log_file = log_dir / "cochem_phase4_silos.log"
+    handler = RotatingFileHandler(log_file, maxBytes=5*1024*1024, backupCount=2)
+    formatter = logging.Formatter('%(asctime)s - [%(levelname)s] - %(message)s')
+    handler.setFormatter(formatter)
+    
     logger = logging.getLogger("CoChem_Phase4")
     logger.setLevel(logging.INFO)
     if not logger.handlers:
-        handler = RotatingFileHandler(os.path.join(log_dir, 'cochem_phase4_silos.log'), maxBytes=5*1024*1024, backupCount=3)
-        formatter = logging.Formatter('%(asctime)s - %(levelname)s - [Phase4] - %(message)s')
-        handler.setFormatter(formatter)
         logger.addHandler(handler)
+        
     return logger
 
-log = setup_logging()
+def find_conda(log: logging.Logger) -> str:
+    """Deep-scans for Conda/Mamba or actively bootstraps Miniconda if completely missing."""
+    print_status("Probing for Conda/Mamba package manager...", "info")
+    
+    # 1. Check Standard PATH
+    conda_path = shutil.which("mamba") or shutil.which("conda")
+    if conda_path:
+        return conda_path
+        
+    # 2. Check Common Hidden Paths (Codespaces/DevContainers)
+    common_paths = [
+        Path.home() / "miniconda3" / "bin" / "conda",
+        Path.home() / "anaconda3" / "bin" / "conda",
+        Path("/opt/conda/bin/conda"),
+        Path("/opt/miniconda3/bin/conda"),
+        Path.home() / ".local" / "miniconda" / "bin" / "conda"
+    ]
+    
+    for p in common_paths:
+        if p.exists() and os.access(p, os.X_OK):
+            log.info(f"Conda found via deep-scan at {p}")
+            return str(p)
+            
+    # 3. Active Self-Healing: Bootstrap Miniconda
+    print_status("Conda not found on system. Initiating automated Miniconda bootstrap...", "warning")
+    log.warning("Conda missing. Fetching Miniconda installer via urllib...")
+    
+    install_dir = Path.home() / ".local" / "miniconda"
+    installer_path = Path.home() / "miniconda_installer.sh"
+    
+    url = "https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh"
+    try:
+        urllib.request.urlretrieve(url, installer_path)
+        print_status("Installer downloaded. Compiling Miniconda runtime (this takes ~60 seconds)...", "info")
+        
+        # Run silent bash installation
+        subprocess.run(["bash", str(installer_path), "-b", "-u", "-p", str(install_dir)], check=True, capture_output=True)
+        
+        installer_path.unlink() # Cleanup
+        new_conda = install_dir / "bin" / "conda"
+        
+        if new_conda.exists():
+            print_status(f"Miniconda successfully bootstrapped to {install_dir}", "success")
+            log.info("Miniconda bootstrap complete.")
+            return str(new_conda)
+            
+    except Exception as e:
+        log.error(f"Miniconda bootstrap failed: {e}")
+        raise RuntimeError(f"FATAL: Conda not found and automated installation failed: {e}")
+        
+    raise RuntimeError("FATAL: Conda installation sequence failed silently.")
+
+def get_selected_modules() -> list:
+    """Reads the intended deployment manifest from UNITY or defaults to ALL."""
+    manifest_path = Path("cochem_setup/cochem_deployment_manifest.json")
+    if manifest_path.exists():
+        try:
+            with open(manifest_path, "r") as f:
+                data = json.load(f)
+                return data.get("modules", [])
+        except json.JSONDecodeError:
+            return ["ALL"]
+    return ["ALL"]
 
 # ---------------------------------------------------------
-# SILO GENERATION FUNCTIONS
+# SILO CONSTRUCTION PROTOCOLS
 # ---------------------------------------------------------
-
-def load_deployment_manifest() -> list:
-    """Reads the UI-generated manifest. If missing, defaults to CORE-only."""
-    manifest_path = Path("cochem_deployment_manifest.json")
-    if not manifest_path.exists():
-        log.warning("Deployment manifest missing. Falling back to Core install.")
-        return ["CoChem-CORE"]
+def run_conda_cmd(cmd_list: list, log: logging.Logger) -> bool:
+    """Safely executes a Conda command and streams to log."""
     try:
-        with open(manifest_path, "r") as f:
-            data = json.load(f)
-            modules = data.get("selected_modules", ["CoChem-CORE"])
-            log.info(f"Loaded manifest with modules: {modules}")
-            return modules
-    except json.JSONDecodeError as e:
-        log.error(f"Manifest decode failed: {e}")
-        return ["CoChem-CORE"]
-
-def find_conda() -> str:
-    """Locates Conda or Mamba to trigger silo generation."""
-    for exe in ["mamba", "conda"]:
-        path = shutil.which(exe)
-        if path:
-            return path
-    raise FileNotFoundError("Neither Conda nor Mamba is installed. Cannot provision silos.")
-
-def build_torq_silo(conda_path: str) -> bool:
-    """Builds the C++ constrained environment for topological conformer searches."""
-    env_name = "CoChem-TORQ-Silo"
-    print_status(f"Provisioning explicit Python 3.11 environment: {env_name}...", "info")
-    try:
-        # Create env
-        subprocess.run([conda_path, "create", "-n", env_name, "python=3.11", "-y"], check=True, capture_output=True)
-        # Install exact dependencies
-        print_status("Injecting networkx, rdkit, and mace-torch into TORQ Silo...", "info")
-        pip_path = f"$(conda info --base)/envs/{env_name}/bin/pip"
-        subprocess.run(f"conda run -n {env_name} pip install --upgrade pip", shell=True, check=True)
-        subprocess.run(f"conda run -n {env_name} pip install networkx rdkit mace-torch", shell=True, check=True)
-        print_status("TORQ Silo Provisioned Successfully.", "success")
-        log.info("CoChem-TORQ-Silo built and configured.")
+        log.info(f"Executing Conda Command: {' '.join(cmd_list)}")
+        result = subprocess.run(
+            cmd_list,
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        log.info(f"Conda Output: {result.stdout}")
         return True
     except subprocess.CalledProcessError as e:
-        print_status(f"Failed to build {env_name}.", "fail")
-        log.error(f"Silo creation failed: {e}")
+        log.error(f"Conda Error: {e.stderr}")
         return False
 
-def build_gpu_silo(conda_path: str) -> bool:
-    """Builds the GPU-accelerated environment mapping to pre-compiled PySCF wheels."""
-    env_name = "CoChem-GPU-Silo"
-    print_status(f"Provisioning PySCF/GPU accelerated environment: {env_name}...", "info")
-    try:
-        subprocess.run([conda_path, "create", "-n", env_name, "python=3.11", "-y"], check=True, capture_output=True)
-        # Assuming CUDA 12 is handled by the devcontainer image, we install the specific GPU wheel.
-        print_status("Injecting gpu4pyscf binding matrix...", "info")
-        subprocess.run(f"conda run -n {env_name} pip install pyscf gpu4pyscf-cuda12", shell=True, check=True)
-        print_status("GPU Silo Provisioned Successfully.", "success")
-        log.info("CoChem-GPU-Silo built and configured.")
+def enforce_pip_upgrades(conda_path: str, env_name: str, log: logging.Logger) -> bool:
+    """Aggressively upgrades pip inside the silo before installing MACE."""
+    print_status(f"Enforcing pip/wheel upgrade in silo '{env_name}'...", "info")
+    return run_conda_cmd(
+        [conda_path, "run", "-n", env_name, "python", "-m", "pip", "install", "--upgrade", "pip", "wheel", "setuptools"],
+        log
+    )
+
+def build_torq_silo(conda_path: str, log: logging.Logger) -> bool:
+    """Builds the primary Discovery/Geometry engine (TORQ/TOPOS)."""
+    env_name = "cochem_torq_silo"
+    print_status(f"Building Discovery Silo '{env_name}' (Python 3.11, MACE, NetworkX)...", "info")
+    
+    # 1. Create Base Env
+    if not run_conda_cmd([conda_path, "create", "-y", "-n", env_name, "python=3.11", "numpy", "scipy", "networkx", "matplotlib"], log):
+        print_status("Failed to create base TORQ Conda environment.", "fail")
+        return False
+        
+    # 2. Upgrade Pip
+    enforce_pip_upgrades(conda_path, env_name, log)
+    
+    # 3. Pip Install PyTorch, MACE, and dependencies
+    print_status("Injecting PyTorch and MACE-OFF23...", "info")
+    pip_cmd = [conda_path, "run", "-n", env_name, "pip", "install", "torch", "mace-torch", "pydantic", "h5py", "rdkit"]
+    
+    if run_conda_cmd(pip_cmd, log):
+        print_status("TORQ Silo built successfully.", "success")
         return True
-    except subprocess.CalledProcessError as e:
-        print_status(f"Failed to build {env_name}.", "warning")
-        log.warning(f"GPU Silo creation failed (Hardware may not support CUDA): {e}")
+    else:
+        print_status("Failed to inject PIP dependencies into TORQ silo.", "fail")
+        return False
+
+def build_gpu_silo(conda_path: str, log: logging.Logger) -> bool:
+    """Builds the specialized GPU4PySCF execution engine for heavy ab initio."""
+    env_name = "cochem_gpu_silo"
+    print_status(f"Building Ab Initio GPU Silo '{env_name}' (GPU4PySCF)...", "info")
+    
+    if not run_conda_cmd([conda_path, "create", "-y", "-n", env_name, "python=3.11", "numpy", "scipy", "h5py"], log):
+         return False
+         
+    enforce_pip_upgrades(conda_path, env_name, log)
+    
+    print_status("Injecting PySCF and pre-compiled GPU4PySCF wheels...", "info")
+    pip_cmd = [conda_path, "run", "-n", env_name, "pip", "install", "pyscf", "gpu4pyscf"]
+    
+    if run_conda_cmd(pip_cmd, log):
+        print_status("GPU Silo built successfully.", "success")
+        return True
+    else:
+        print_status("Failed to inject PySCF into GPU silo.", "warning")
         return False
 
 # ---------------------------------------------------------
 # MAIN EXECUTION
 # ---------------------------------------------------------
 def main():
-    print(f"\n{Colors.BOLD}--- CoChem Phase 4: Dynamic Micro-Silo Orchestration ---{Colors.ENDC}")
+    print(f"\n{Colors.BOLD}--- CoChem Phase 4: Micro-Silo Orchestration ---{Colors.ENDC}")
     
-    selected_modules = load_deployment_manifest()
+    log = setup_phase4_logging()
+    log.info("Phase 4 Execution Started.")
     
     try:
-        conda_path = find_conda()
-    except FileNotFoundError as e:
+        conda_path = find_conda(log)
+        print_status(f"Package Manager Detected: {conda_path}", "success")
+    except RuntimeError as e:
         print_status(str(e), "fail")
-        sys.exit(1)
-
-    # Base state for Phase 5 aggregation
+        log.error(str(e))
+        raise
+        
+    selected_modules = get_selected_modules()
+    
+    # State record for Phase 5 Golden Gatekeeper aggregation
     state_record = {
         "phase": 4,
         "torq_silo_active": False,
         "gpu_silo_active": False
     }
     
-    # Build Torq Silo if any geometry/ML tool is selected
-    if any(mod in selected_modules for mod in ["CoChem-TOPOS", "CoChem-TORQ", "CoChem-SCAN", "CoChem-SpycFit", "CoChem-LUMOS"]):
-        if build_torq_silo(conda_path):
+    if "ALL" in selected_modules or any(mod in selected_modules for mod in ["CoChem-TOPOS", "CoChem-TORQ", "CoChem-SCAN", "CoChem-SpycFit", "CoChem-LUMOS"]):
+        if build_torq_silo(conda_path, log):
             state_record["torq_silo_active"] = True
     else:
         print_status("Skipping TORQ Silo (Not required by deployment manifest)", "info")
         
-    # Build GPU Silo if heavy ab initio/spectroscopy tools are selected
-    if any(mod in selected_modules for mod in ["CoChem-TORQ", "CoChem-SCAN", "CoChem-SpycFit", "CoChem-LUMOS"]):
-        if build_gpu_silo(conda_path):
+    if "ALL" in selected_modules or any(mod in selected_modules for mod in ["CoChem-TORQ", "CoChem-SCAN", "CoChem-SpycFit", "CoChem-LUMOS"]):
+        if build_gpu_silo(conda_path, log):
             state_record["gpu_silo_active"] = True
     else:
         print_status("Skipping GPU PySCF Silo (Not required by deployment manifest)", "info")
         
-    # Write the intermediate state file
     os.makedirs("cochem_setup", exist_ok=True)
     state_path = os.path.join("cochem_setup", "cochem_state_p4.json")
     
     try:
         with open(state_path, "w") as f:
             json.dump(state_record, f, indent=4)
-        print_status(f"Phase 4 state successfully locked to {state_path}", "success")
-        log.info("Phase 4 execution completed.")
-    except IOError as e:
-        print_status(f"Failed to write state file: {e}", "fail")
-        log.error(f"IOError during state save: {e}")
-        sys.exit(1)
+        print_status(f"Phase 4 state locked to cochem_setup/cochem_state_p4.json", "success")
+        log.info("Phase 4 completed successfully.")
+        
+    except Exception as e:
+        print_status(f"Fatal error writing Phase 4 state: {e}", "fail")
+        log.error(f"Write error: {e}")
+        raise RuntimeError(f"Phase 4 Registry Lock Failed: {e}")
 
 if __name__ == "__main__":
     main()

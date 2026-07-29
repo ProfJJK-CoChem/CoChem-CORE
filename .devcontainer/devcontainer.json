@@ -1,22 +1,43 @@
+// cochem_canvas_target: .devcontainer/devcontainer.json
 {
-  "name": "CoChem-CORE Environment",
-  "build": {
-    "dockerfile": "../docker.dockerfile"
-  },
-  "customizations": {
-    "vscode": {
-      "settings": {
-        "python.defaultInterpreterPath": "/usr/bin/python3.11",
-        "python.formatting.provider": "black",
-        "editor.formatOnSave": true
-      },
-      "extensions": [
-        "ms-python.python",
-        "ms-toolsai.jupyter",
-        "ms-python.black-formatter"
-      ]
-    }
-  },
-  "remoteUser": "vscode",
-  "postCreateCommand": "pip install -r requirements.txt"
+    "name": "CoChem-CORE Advanced GPU Runtime",
+    "build": {
+        "dockerfile": "../docker.dockerfile"
+    },
+    "runArgs": [
+        "--gpus", "all",
+        "--shm-size=8gb",
+        "--cap-add=SYS_PTRACE"
+    ],
+    "customizations": {
+        "vscode": {
+            "settings": {
+                "python.defaultInterpreterPath": "/usr/bin/python",
+                "terminal.integrated.defaultProfile.linux": "bash",
+                "editor.formatOnSave": true
+            },
+            "extensions": [
+                "ms-python.python",
+                "ms-toolsai.jupyter",
+                "ms-python.vscode-pylance"
+            ]
+        }
+    },
+    "forwardPorts": [
+        8000, 
+        8888, 
+        5173
+    ],
+    "portsAttributes": {
+        "8000": {
+            "label": "CoChem-UNITY FastAPI Backend",
+            "onAutoForward": "notify"
+        },
+        "5173": {
+            "label": "CoChem-DOCK React SPA",
+            "onAutoForward": "notify"
+        }
+    },
+    "postCreateCommand": "pip install --upgrade pip && pip install --user -r requirements.txt",
+    "remoteUser": "vscode"
 }

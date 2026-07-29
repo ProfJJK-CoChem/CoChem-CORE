@@ -1,3 +1,4 @@
+# cochem_canvas_target: cochem_setup/cochem_setup_phase_11.py
 #!/usr/bin/env python3
 """
 CoChem-CORE Setup Phase 11: Memory Router & Tiering
@@ -24,23 +25,8 @@ class Colors:
     ENDC = '\033[0m'
     BOLD = '\033[1m'
 
-def setup_logging() -> logging.Logger:
-    log_dir = Path("Logs")
-    log_dir.mkdir(exist_ok=True)
-    logger = logging.getLogger("CoChem_Phase11")
-    logger.setLevel(logging.INFO)
-    
-    if not logger.handlers:
-        handler = RotatingFileHandler(log_dir / 'cochem_phase11_router.log', maxBytes=5*1024*1024, backupCount=3)
-        formatter = logging.Formatter('%(asctime)s - %(levelname)s - [Phase11] - %(message)s')
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
-        
-    return logger
-
-log = setup_logging()
-
 def print_status(msg: str, status: str = "info") -> None:
+    """Standardized console UI output."""
     if status == "success":
         print(f" {Colors.OKGREEN}✅ {msg}{Colors.ENDC}")
     elif status == "warning":
@@ -50,50 +36,59 @@ def print_status(msg: str, status: str = "info") -> None:
     else:
         print(f" {Colors.OKCYAN}➡️ {msg}{Colors.ENDC}")
 
-# ---------------------------------------------------------
-# TIERING LOGIC
-# ---------------------------------------------------------
-
-def calculate_adaptive_tiers(ram_gb: float, cores: int, vram_gb: float) -> dict:
-    """
-    Scientifically bounds the execution limits based on hardware profiles to prevent 
-    OOM crashes during large TOPOS sweeps.
-    """
-    print_status(f"Evaluating Hardware Thresholds (RAM: {ram_gb}GB, Cores: {cores}, VRAM: {vram_gb}GB)...", "info")
+def setup_phase11_logging() -> logging.Logger:
+    """Configures the persistent logging subsystem within the strict Artifact Air-Gap."""
+    artifact_dir = os.environ.get("COCHEM_ARTIFACT_DIR", str(Path.home() / "CoChem_Artifacts"))
+    log_dir = Path(artifact_dir) / "Logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
     
-    policy = {
-        "max_concurrent_mace_threads": 1,
-        "max_dft_basis_functions": 1000,
-        "recommend_ccsdt": False,
-        "classification": "BASIC_LAPTOP"
-    }
-
-    if vram_gb >= 11.0 and ram_gb >= 32.0 and cores >= 8:
-        policy["classification"] = "WORKSTATION_GPU"
-        policy["max_concurrent_mace_threads"] = 4
-        policy["max_dft_basis_functions"] = 4000
-        policy["recommend_ccsdt"] = True
-    elif ram_gb >= 64.0 and cores >= 16:
-        policy["classification"] = "HPC_NODE"
-        policy["max_concurrent_mace_threads"] = 8
-        policy["max_dft_basis_functions"] = 8000
-        policy["recommend_ccsdt"] = True
-    elif ram_gb >= 16.0 and cores >= 4:
-        policy["classification"] = "STANDARD_DESKTOP"
-        policy["max_concurrent_mace_threads"] = 2
-        policy["max_dft_basis_functions"] = 2000
+    log_file = log_dir / "cochem_phase11_router.log"
+    handler = RotatingFileHandler(log_file, maxBytes=5*1024*1024, backupCount=2)
+    formatter = logging.Formatter('%(asctime)s - [%(levelname)s] - %(message)s')
+    handler.setFormatter(formatter)
+    
+    logger = logging.getLogger("CoChem_Phase11")
+    logger.setLevel(logging.INFO)
+    if not logger.handlers:
+        logger.addHandler(handler)
         
-    log.info(f"Node Classified: {policy['classification']}")
-    return policy
+    return logger
 
-def load_phase_10_status(base_dir: Path) -> bool:
-    """Checks if the MolSym alignment engine is ready."""
-    state_path = base_dir / "cochem_setup" / "cochem_state_p10.json"
-    if state_path.exists():
-        with open(state_path, "r") as f:
-            data = json.load(f)
-            return data.get("alignment_engine_ready", False)
+def load_phase_10_status(setup_dir: Path, log: logging.Logger) -> bool:
+    """Safely retrieves the MolSym symmetry engine availability."""
+    p10_path = setup_dir / "cochem_state_p10.json"
+    if p10_path.exists():
+        try:
+            with open(p10_path, "r") as f:
+                p10_data = json.load(f)
+                ready = p10_data.get("alignment_engine_ready", False)
+                log.info(f"Phase 10 alignment_engine_ready: {ready}")
+                return ready
+        except json.JSONDecodeError:
+            log.warning("Phase 10 state corrupted. Defaulting alignment_engine_ready to False.")
+    else:
+        log.warning("Phase 10 state missing. Defaulting alignment_engine_ready to False.")
     return False
+
+def calculate_adaptive_tiers(ram_gb: float, cpu_cores: int, vram_gb: float) -> dict:
+    """Determines node capabilities and safe operational limits."""
+    # Baseline assumption: 1 heavy ORCA core thread requires ~4GB RAM for safe CCSD(T) or large DFT
+    safe_concurrent_heavy_jobs = max(1, int(ram_gb // 4.0))
+    max_concurrent_heavy_jobs = min(safe_concurrent_heavy_jobs, cpu_cores)
+    
+    classification = "Tier 3 (Edge/Laptop)"
+    if ram_gb >= 60 and cpu_cores >= 16:
+        classification = "Tier 1 (HPC/Heavy Workstation)"
+    elif ram_gb >= 15 and cpu_cores >= 8:
+        classification = "Tier 2 (Standard Workstation)"
+        
+    return {
+        "classification": classification,
+        "max_concurrent_heavy_jobs": max_concurrent_heavy_jobs,
+        "safe_maxcore_mb_per_thread": 4000 if ram_gb >= 16 else max(1000, int((ram_gb * 1024) / max(1, cpu_cores))),
+        "mace_off23_capable": bool(vram_gb >= 4.0 or ram_gb >= 16.0),
+        "ccsd_t_capable": bool(ram_gb >= 32.0)
+    }
 
 # ---------------------------------------------------------
 # MAIN EXECUTION
@@ -101,17 +96,19 @@ def load_phase_10_status(base_dir: Path) -> bool:
 def main():
     print(f"\n{Colors.BOLD}--- CoChem Phase 11: Memory Router & Tiering ---{Colors.ENDC}")
     
-    base_dir = Path(__file__).resolve().parent.parent
-    config_path = base_dir / "cochem_system_config.json"
+    log = setup_phase11_logging()
+    log.info("Phase 11 Execution Started.")
+    
+    # Resolve project root dynamically
+    repo_root = Path(__file__).resolve().parent.parent
+    setup_dir = repo_root / "cochem_setup"
+    config_path = setup_dir / "cochem_system_config.json"
     
     if not config_path.exists():
-        error_msg = f"FATAL: {config_path} not found. Phase 5 failed or was skipped."
-        log.error(error_msg)
-        print_status(error_msg, "fail")
-        # PATCH 3: Change sys.exit(1) to RuntimeError to prevent Jupyter Kernel death
-        raise RuntimeError("Setup failed: cochem_system_config.json not found.")
+        print_status(f"CRITICAL: {config_path.name} not found. Run Phase 5 first.", "fail")
+        raise RuntimeError("Phase 11 Aborted: Master registry not found.")
         
-    molsym_ready = load_phase_10_status(base_dir)
+    molsym_ready = load_phase_10_status(setup_dir, log)
     
     try:
         with open(config_path, "r") as f:
@@ -136,11 +133,20 @@ def main():
         print_status("Official cochem_system_config.json has been securely locked.", "success")
         log.info("Phase 11 execution completed. Configuration finalized.")
         
+        # Workspace Sweep: Purge Phase 10 state
+        p10_path = setup_dir / "cochem_state_p10.json"
+        if p10_path.exists():
+            p10_path.unlink()
+            
     except json.JSONDecodeError:
-        error_msg = f"FATAL: {config_path} is corrupted. Please re-run Phase 5."
-        log.error(error_msg)
+        error_msg = f"FATAL: {config_path.name} is corrupted. Please re-run Phase 5."
         print_status(error_msg, "fail")
-        raise RuntimeError("Setup failed: Registry corruption detected.")
+        log.error(error_msg)
+        raise RuntimeError(error_msg)
+    except Exception as e:
+        print_status(f"Phase 11 Failed: {str(e)}", "fail")
+        log.error(f"Execution Error: {e}")
+        raise RuntimeError(f"Phase 11 Aborted: {e}")
 
 if __name__ == "__main__":
     main()

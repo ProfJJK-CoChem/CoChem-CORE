@@ -1,0 +1,35 @@
+{
+    "schema_version": "1.0.0",
+    "last_updated": "2026-07-29T15:11:00.677161",
+    "hardware": {
+        "physical_cpu_cores": 6,
+        "logical_cpu_cores": 12,
+        "ram_gb": 38.25,
+        "avx512_support": false,
+        "gpu_profile": "NVIDIA GeForce RTX 3090",
+        "vram_gb": 24.0,
+        "subnormal_precision_trap": false,
+        "os_target": "linux_x86_64"
+    },
+    "engines": {
+        "orca": {
+            "status": "missing",
+            "path": "None",
+            "version": "6.1.1"
+        },
+        "mpirun": {
+            "status": "verified",
+            "path": "/usr/bin/mpirun",
+            "version": "4.1.6"
+        },
+        "xtb": {
+            "status": "verified",
+            "path": "/home/vscode/CoChem_Artifacts/Registry/Engines/xtb_bin/xtb-dist/share/xtb",
+            "version": "latest"
+        }
+    },
+    "silos": {
+        "torq_silo_active": false,
+        "gpu_silo_active": false
+    }
+}

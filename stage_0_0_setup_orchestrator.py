@@ -1,84 +1,109 @@
-#!/usr/bin/env python3
-"""
-CoChem-CORE: Stage 0.0 - Setup Orchestrator
-Sequentially executes the 7-Phase Initialization pipeline.
-Enforces strictly gated execution, directory integrity checks, and automated diagnostic recovery instructions on failure.
-"""
-
+# cochem_canvas_target: stage_0_0_setup_orchestrator.py
 import os
 import sys
 import subprocess
+import shutil
 from pathlib import Path
 
-# ---------------------------------------------------------
-# UI & LOGGING PROTOCOLS
-# ---------------------------------------------------------
-class Colors:
-    HEADER = '\033[95m'
-    OKBLUE = '\033[94m'
-    OKCYAN = '\033[96m'
-    OKGREEN = '\033[92m'
-    WARNING = '\033[93m'
-    FAIL = '\033[91m'
-    ENDC = '\033[0m'
-    BOLD = '\033[1m'
-
-# Define the exact execution sequence matching the CoChem architecture
-PHASE_MANIFEST = [
-    (1, "./cochem_setup/cochem_setup_phase_1.py", "OS/Hypervisor Audit"),
-    (2, "./cochem_setup/cochem_setup_phase_2.py", "Hardware, RAM, & CPU Mapping"),
-    (3, "./cochem_setup/cochem_setup_phase_3.py", "Engine Binary Validation (ORCA, OpenMPI, g-xTB)"),
-    (4, "./cochem_setup/cochem_setup_phase_4.py", "Silo Generation & Python 3.11 Enforcer"),
-    (5, "./cochem_setup/cochem_setup_phase_5.py", "IPC Config Lock & Workspace Sweep"),
-    (10, "./cochem_setup/cochem_setup_phase_10.py", "Eckart Frame & MolSym Intake"),
-    (11, "./cochem_setup/cochem_setup_phase_11.py", "Memory Router & Adaptive Tiering")
-]
-
-def verify_integrity(base_dir: Path) -> bool:
-    print(f"{Colors.OKCYAN}Verifying Orchestrator Integrity...{Colors.ENDC}")
-    for _, script, _ in PHASE_MANIFEST:
-        target = base_dir / script
-        if not target.exists():
-            print(f"{Colors.FAIL}❌ Missing Phase Script: {script}{Colors.ENDC}")
-            return False
-    return True
-
-def run_phase(base_dir: Path, phase_num: int, script_name: str, desc: str) -> bool:
-    script_path = base_dir / script_name
-    print(f"\n{Colors.HEADER}>>> Executing Phase {phase_num}: {desc}{Colors.ENDC}")
-    try:
-        # Stream output natively so user can see progress
-        result = subprocess.run([sys.executable, str(script_path)], check=True)
-        return True
-    except subprocess.CalledProcessError as e:
-        print(f"\n{Colors.FAIL}❌ Phase {phase_num} Failed with Exit Code {e.returncode}{Colors.ENDC}")
-        print(f"{Colors.WARNING}----------------------------------------{Colors.ENDC}")
-        print(f"{Colors.BOLD}Diagnostic Recovery Instructions:{Colors.ENDC}")
-        print(f"1. {Colors.BOLD}Inspect Trailing Log:{Colors.ENDC} Check Logs/cochem_phase{phase_num}_*.log for specific traceback.")
-        print(f"2. {Colors.BOLD}Isolate Failure Phase:{Colors.ENDC} The last successful state JSON in cochem_setup/ indicates where the cascade halted.")
-        print(f"3. {Colors.BOLD}Resource Check:{Colors.ENDC} Do NOT bypass thermal or memory checks. If Phase 2 or 4 failed, ensure your host has sufficient unallocated RAM.")
-        print(f"4. {Colors.BOLD}Silo Fallback:{Colors.ENDC} If this occurred during Phase 4 (Silo Generation), allow the process to finish if it is attempting dynamic environment generation before manually killing.")
-        print(f"{Colors.WARNING}----------------------------------------{Colors.ENDC}\n")
-        return False
-
-def main():
-    print(f"{Colors.BOLD}=============================================================={Colors.ENDC}")
-    print(f"{Colors.BOLD}            CoChem-CORE 7-Phase Orchestrator                  {Colors.ENDC}")
-    print(f"{Colors.BOLD}=============================================================={Colors.ENDC}\n")
+def inject_local_paths(env: dict) -> dict:
+    """Automatically patches the terminal profile and active env to include .local/bin."""
+    local_bin = Path.home() / ".local" / "bin"
     
-    base_dir = Path(__file__).parent.absolute()
-    
-    if not verify_integrity(base_dir):
-        sys.exit(1)
+    if local_bin.exists() and str(local_bin) not in env.get("PATH", ""):
+        env["PATH"] = f"{local_bin}:{env.get('PATH', '')}"
         
-    for phase_num, script_name, desc in PHASE_MANIFEST:
-        success = run_phase(base_dir, phase_num, script_name, desc)
-        if not success:
+    export_string = f'\n# CoChem Automated Path Injection\nexport PATH="{local_bin}:$PATH"\n'
+    
+    for rc_file in [".bashrc", ".zshrc"]:
+        profile_path = Path.home() / rc_file
+        if profile_path.exists():
+            content = profile_path.read_text()
+            if str(local_bin) not in content:
+                with open(profile_path, "a") as f:
+                    f.write(export_string)
+                print(f"🔧 Automatically patched {rc_file} to include local binaries.")
+                
+    return env
+
+def set_artifact_dir(env: dict) -> dict:
+    """Enforces the strict Air-Gap directory for logs and state."""
+    artifact_dir = Path.home() / "CoChem_Artifacts"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    env["COCHEM_ARTIFACT_DIR"] = str(artifact_dir)
+    print(f"🔒 Air-Gap Enforced: All logs and state files routed to {artifact_dir}")
+    return env
+
+def run_setup_phases(repo_root: Path, env: dict):
+    """Executes the core 5 phases sequentially using pure Python."""
+    setup_dir = repo_root / "cochem_setup"
+    
+    phases = [
+        setup_dir / "cochem_setup_phase_1.py",
+        setup_dir / "cochem_setup_phase_2.py",
+        setup_dir / "cochem_setup_phase_3.py",
+        setup_dir / "cochem_setup_phase_4.py",
+        setup_dir / "cochem_setup_phase_5.py"
+    ]
+    
+    print("\n🚀 Initiating CoChem Core Bootstrapper...")
+    for phase in phases:
+        if not phase.exists():
+            print(f"❌ FATAL: Missing setup phase script: {phase}")
             sys.exit(1)
             
-    print(f"\n{Colors.OKGREEN}{Colors.BOLD}✅============================================================{Colors.ENDC}")
-    print(f"{Colors.OKGREEN}{Colors.BOLD}      ALL PHASES COMPLETED. REGISTRY OFFICIALLY LOCKED.       {Colors.ENDC}")
-    print(f"{Colors.OKGREEN}{Colors.BOLD}==============================================================✅{Colors.ENDC}\n")
+        print(f"\n▶️ Executing {phase.name}...")
+        try:
+            subprocess.run([sys.executable, str(phase)], env=env, check=True)
+        except subprocess.CalledProcessError as e:
+            print(f"\n❌ Phase Execution Failed (Exit code: {e.returncode}).")
+            print("Please check the logs in ~/CoChem_Artifacts/Logs/ for details.")
+            sys.exit(e.returncode)
+
+def launch_unity_dashboard(repo_root: Path, env: dict):
+    """Hands off execution to the GUI only after silos are built."""
+    gui_script = repo_root / "interfaces" / "cochem_unity_installer_dashboard.py"
+    if not gui_script.exists():
+        print(f"\n⚠️  WARNING: GUI Dashboard not found at {gui_script}.")
+        print("CoChem Core is installed, but the UI is missing. Proceeding via CLI only.")
+        return
+
+    print("\n🌐 Bootstrapping complete. Launching CoChem-UNITY Dashboard...")
+    
+    # Check standard paths and the custom local bootstrap path
+    conda_path = shutil.which("mamba") or shutil.which("conda")
+    if not conda_path:
+        local_conda = Path.home() / ".local" / "miniconda" / "bin" / "conda"
+        if local_conda.exists():
+            conda_path = str(local_conda)
+
+    if conda_path:
+        try:
+            # Execute the GUI inside the properly configured conda environment
+            print(f"🔄 Routing GUI through {conda_path} inside cochem_torq_silo...")
+            subprocess.run([conda_path, "run", "-n", "cochem_torq_silo", "python", str(gui_script)], env=env, check=True)
+        except subprocess.CalledProcessError as e:
+             print(f"\n❌ GUI Launch failed via Conda: {e}")
+    else:
+         print("\n⚠️  Conda not found in path. Attempting to launch GUI with system python...")
+         subprocess.run([sys.executable, str(gui_script)], env=env)
+
+def main():
+    print("=======================================================")
+    print(" CoChem Pipeline Initialization Orchestrator ")
+    print("=======================================================\n")
+
+    repo_root = Path(__file__).resolve().parent
+    print(f"📂 Repository Root: {repo_root}")
+
+    env = os.environ.copy()
+    env = inject_local_paths(env)
+    env = set_artifact_dir(env)
+    
+    # 1. Run the headless setup scripts to generate the Conda silos
+    run_setup_phases(repo_root, env)
+    
+    # 2. Hand off to the UI
+    launch_unity_dashboard(repo_root, env)
 
 if __name__ == "__main__":
     main()

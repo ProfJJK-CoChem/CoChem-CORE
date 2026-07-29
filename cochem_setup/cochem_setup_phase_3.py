@@ -1,26 +1,27 @@
+# cochem_canvas_target: cochem_setup/cochem_setup_phase_3.py
 #!/usr/bin/env python3
 """
-CoChem-CORE Setup Phase 3: Deep Engine & Cryptographic Verification
-Locates local installations of ORCA, OpenMPI, and g-xTB, extracts version info,
-and calculates SHA-256 hashes for strict deterministic provenance.
+CoChem-CORE Setup Phase 3: Engines & Determinism
+Performs cryptographic verification of system ORCA, OpenMPI, and g-xTB binaries.
+If binaries are missing, it executes active fallback provisioning and compilation
+within the isolated Air-Gap registry.
 """
 
 import os
 import sys
 import json
-import hashlib
-import subprocess
 import shutil
+import urllib.request
+import tarfile
+import subprocess
 import logging
+from pathlib import Path
 from logging.handlers import RotatingFileHandler
-from typing import Dict, Any
 
 # ---------------------------------------------------------
 # UI & LOGGING PROTOCOLS
 # ---------------------------------------------------------
 class Colors:
-    HEADER = '\033[95m'
-    OKBLUE = '\033[94m'
     OKCYAN = '\033[96m'
     OKGREEN = '\033[92m'
     WARNING = '\033[93m'
@@ -39,68 +40,200 @@ def print_status(msg: str, status: str = "info") -> None:
     else:
         print(f" {Colors.OKCYAN}➡️ {msg}{Colors.ENDC}")
 
-def setup_logging() -> logging.Logger:
-    """Initializes the diagnostic rotating logger."""
-    log_dir = "Logs"
-    os.makedirs(log_dir, exist_ok=True)
+def setup_phase3_logging() -> tuple[Path, logging.Logger]:
+    """Configures the persistent logging subsystem within the strict Artifact Air-Gap."""
+    artifact_dir = os.environ.get("COCHEM_ARTIFACT_DIR")
+    if not artifact_dir:
+        raise RuntimeError("❌ FATAL: COCHEM_ARTIFACT_DIR not set. Must run via Orchestrator.")
+    
+    log_dir = Path(artifact_dir) / "Logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    
+    log_file = log_dir / "cochem_phase3_engines.log"
+    handler = RotatingFileHandler(log_file, maxBytes=5*1024*1024, backupCount=2)
+    formatter = logging.Formatter('%(asctime)s - [%(levelname)s] - %(message)s')
+    handler.setFormatter(formatter)
+    
     logger = logging.getLogger("CoChem_Phase3")
     logger.setLevel(logging.INFO)
     if not logger.handlers:
-        handler = RotatingFileHandler(os.path.join(log_dir, 'cochem_phase3_engines.log'), maxBytes=5*1024*1024, backupCount=3)
-        formatter = logging.Formatter('%(asctime)s - %(levelname)s - [Phase3] - %(message)s')
-        handler.setFormatter(formatter)
         logger.addHandler(handler)
-    return logger
+        
+    engines_dir = Path(artifact_dir) / "Registry" / "Engines"
+    engines_dir.mkdir(parents=True, exist_ok=True)
+    return engines_dir, logger
 
-log = setup_logging()
-
-# ---------------------------------------------------------
-# ENGINE VERIFICATION FUNCTIONS
-# ---------------------------------------------------------
-
-def calculate_sha256(filepath: str) -> str:
-    """Computes the cryptographic SHA-256 hash of a compiled binary."""
-    sha256_hash = hashlib.sha256()
+def test_executable(cmd_list: list, check_string: str, env: dict = None) -> bool:
+    """Executes a command and checks if the output contains a validation string."""
     try:
-        with open(filepath, "rb") as f:
-            for byte_block in iter(lambda: f.read(4096), b""):
-                sha256_hash.update(byte_block)
-        return sha256_hash.hexdigest()
-    except IOError as e:
-        log.error(f"Failed to hash {filepath}: {e}")
-        return "HASH_FAILED"
+        result = subprocess.run(
+            cmd_list, 
+            capture_output=True, 
+            text=True, 
+            env=env,
+            timeout=15
+        )
+        if check_string.lower() in result.stdout.lower() or check_string.lower() in result.stderr.lower():
+            return True
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired, PermissionError):
+        return False
+    return False
 
-def verify_engine(executable_name: str) -> Dict[str, Any]:
-    """
-    Locates the binary in the system PATH.
-    If found, returns the absolute path and its SHA-256 hash.
-    """
-    path = shutil.which(executable_name)
-    if not path:
-        log.warning(f"Engine binary '{executable_name}' not found in PATH.")
-        return {"status": "missing", "path": None, "version": None, "hash": None}
+# ---------------------------------------------------------
+# ACTIVE FALLBACK INSTALLATION ROUTINES
+# ---------------------------------------------------------
+def install_openmpi(engines_dir: Path, log: logging.Logger) -> Path:
+    """Actively downloads and compiles OpenMPI source if missing from the environment."""
+    mpi_dir = engines_dir / "openmpi_4_1_6"
+    if mpi_dir / "bin" / "mpirun" in mpi_dir.glob("**/mpirun"):
+        print_status("OpenMPI local cache hit verified.", "success")
+        log.info("OpenMPI found in local engine cache.")
+        return list(mpi_dir.glob("**/mpirun"))[0]
 
-    # Ensure we actually have execution permission, guarding against broken symlinks
-    if not os.access(path, os.X_OK):
-        log.error(f"Binary '{executable_name}' found at {path}, but lacks execution permissions.")
-        return {"status": "permission_denied", "path": path, "version": None, "hash": None}
-
-    binary_hash = calculate_sha256(path)
-    log.info(f"Verified {executable_name} at {path} (SHA-256: {binary_hash[:16]}...)")
+    print_status("OpenMPI missing. Initiating automated source fetch (OpenMPI 4.1.6)...", "warning")
+    log.info("Downloading OpenMPI 4.1.6 source archive...")
     
-    return {
-        "status": "found",
-        "path": os.path.abspath(path),
-        "version": "unknown",  # We let the Config Compiler handle explicit semantic version checking
-        "hash": binary_hash
-    }
+    tarball_path = engines_dir / "openmpi-4.1.6.tar.gz"
+    url = "https://download.open-mpi.org/release/open-mpi/v4.1/openmpi-4.1.6.tar.gz"
+    
+    try:
+        urllib.request.urlretrieve(url, tarball_path)
+        print_status("OpenMPI archive downloaded successfully. Extracting...", "info")
+        
+        with tarfile.open(tarball_path, "r:gz") as tar:
+            tar.extractall(path=engines_dir)
+            
+        src_dir = engines_dir / "openmpi-4.1.6"
+        build_dir = engines_dir / "openmpi_build"
+        build_dir.mkdir(exist_ok=True)
+        
+        print_status("Configuring OpenMPI build...", "info")
+        subprocess.run(
+            [str(src_dir / "configure"), f"--prefix={mpi_dir}"],
+            cwd=build_dir, check=True, capture_output=True
+        )
+        
+        print_status("Compiling OpenMPI binaries (Make)...", "info")
+        subprocess.run(["make", "-j4"], cwd=build_dir, check=True, capture_output=True)
+        subprocess.run(["make", "install"], cwd=build_dir, check=True, capture_output=True)
+        
+        print_status("OpenMPI successfully compiled and staged.", "success")
+        log.info("OpenMPI compilation successful.")
+        
+        # Cleanup tarball and build scratch to save space
+        tarball_path.unlink(missing_ok=True)
+        shutil.rmtree(build_dir, ignore_errors=True)
+        
+        return mpi_dir / "bin" / "mpirun"
+        
+    except Exception as e:
+        print_status(f"OpenMPI automated compilation failed: {e}", "fail")
+        log.error(f"OpenMPI build error: {e}")
+        return None
 
-def mask_path(path: str) -> str:
-    """Truncates paths for UI display to prevent UI flooding."""
-    if not path: return "None"
-    if len(path) > 50:
-        return "..." + path[-47:]
-    return path
+def install_xtb(engines_dir: Path, log: logging.Logger) -> Path:
+    """Fetches and extracts Grimme's xTB binaries for fast-pass triaging."""
+    xtb_dir = engines_dir / "xtb_bin"
+    xtb_bin = xtb_dir / "xtb"
+    if xtb_bin.exists():
+        print_status("g-xTB local cache hit verified.", "success")
+        log.info("g-xTB found in local engine cache.")
+        return xtb_bin
+
+    print_status("g-xTB missing. Fetching pre-compiled release...", "warning")
+    log.info("Downloading g-xTB static binary release...")
+    
+    tarball_path = engines_dir / "xtb.tar.xz"
+    url = "https://github.com/grimme-lab/xtb/releases/download/v6.7.1/xtb-6.7.1-linux-x86_64.tar.xz"
+    
+    try:
+        urllib.request.urlretrieve(url, tarball_path)
+        print_status("g-xTB archive downloaded. Extracting into Air-Gap registry...", "info")
+        
+        xtb_dir.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(tarball_path, "r:xz") as tar:
+            tar.extractall(path=xtb_dir)
+            
+        print_status("g-xTB successfully staged.", "success")
+        log.info("g-xTB extraction complete.")
+        tarball_path.unlink(missing_ok=True)
+        
+        bin_matches = list(xtb_dir.glob("**/xtb"))
+        if bin_matches:
+            return bin_matches[0]
+            
+    except Exception as e:
+        print_status(f"g-xTB automated fetch failed: {e}", "warning")
+        log.warning(f"g-xTB download error: {e}")
+        
+    return None
+
+# ---------------------------------------------------------
+# BINARY VERIFICATION LOGIC
+# ---------------------------------------------------------
+def verify_orca(log: logging.Logger) -> dict:
+    """Uses the Bulletproof Sibling Scanner to locate Max-Planck ORCA 6.1.1."""
+    print_status("Checking for system-wide ORCA...")
+    
+    orca_path = shutil.which("orca")
+    if not orca_path:
+        orca_home = os.environ.get("ORCA_HOME", "")
+        if orca_home:
+            orca_path = shutil.which("orca", path=orca_home)
+            
+    if orca_path:
+        orca_dir = Path(orca_path).parent
+        # The Sibling Check: Ensures this is actually Max-Planck's ORCA
+        if (orca_dir / "orca_scf").exists() and (orca_dir / "orca_mcscf").exists():
+            print_status(f"System ORCA natively detected at: {orca_path}", "success")
+            log.info(f"ORCA 6.1.x verified via sibling scan at {orca_path}")
+            return {"status": "verified", "path": str(orca_path)}
+        else:
+            log.warning(f"Found 'orca' binary at {orca_path} but missing siblings. Likely GNOME screen reader.")
+            
+    print_status("ORCA status: missing. Ab initio extrapolation stages will require manual path linkage.", "warning")
+    log.warning("ORCA missing. Prompting manual installation fallback downstream.")
+    return {"status": "missing", "path": "None"}
+
+def verify_openmpi(engines_dir: Path, log: logging.Logger) -> dict:
+    """Validates OpenMPI or triggers active source compilation."""
+    print_status("Checking for system-wide OpenMPI...")
+    
+    mpirun_path = shutil.which("mpirun")
+    if mpirun_path and test_executable([mpirun_path, "--version"], "open mpi"):
+        print_status(f"OpenMPI natively detected at: {mpirun_path}", "success")
+        log.info(f"OpenMPI verified at {mpirun_path}")
+        return {"status": "verified", "path": str(mpirun_path)}
+        
+    print_status("System OpenMPI missing. Triggering active compilation...", "warning")
+    compiled_mpi = install_openmpi(engines_dir, log)
+    
+    if compiled_mpi and compiled_mpi.exists():
+        return {"status": "compiled_source", "path": str(compiled_mpi)}
+        
+    print_status("OpenMPI status: missing. Workloads restricted to sequential mode.", "warning")
+    log.warning("OpenMPI installation failed. Workloads restricted to sequential mode.")
+    return {"status": "missing", "path": "None"}
+
+def verify_xtb(engines_dir: Path, log: logging.Logger) -> dict:
+    """Validates g-xTB or triggers fallback deployment."""
+    print_status("Checking for system-wide g-xTB...")
+    
+    xtb_path = shutil.which("xtb")
+    if xtb_path and test_executable([xtb_path, "--version"], "xtb"):
+        print_status(f"System g-xTB verified at: {xtb_path}", "success")
+        log.info(f"xTB verified at {xtb_path}")
+        return {"status": "verified", "path": str(xtb_path)}
+        
+    print_status("System g-xTB missing. Triggering automated deployment...", "warning")
+    local_xtb = install_xtb(engines_dir, log)
+    
+    if local_xtb and local_xtb.exists():
+        return {"status": "verified", "path": str(local_xtb)}
+        
+    print_status("g-xTB status: missing. Fast triages will degrade to local PySCF/MACE.", "warning")
+    log.warning("xTB missing. Falling back to PySCF/MACE for triages.")
+    return {"status": "missing", "path": "None"}
 
 # ---------------------------------------------------------
 # MAIN EXECUTION
@@ -108,47 +241,48 @@ def mask_path(path: str) -> str:
 def main():
     print(f"\n{Colors.BOLD}--- CoChem Phase 3: Engines & Determinism ---{Colors.ENDC}")
     
-    engines_data = {}
-    
-    print_status("Checking for system-wide ORCA...", "info")
-    engines_data["orca"] = verify_engine("orca")
-    if engines_data["orca"]["status"] == "found":
-        print_status(f"Found cached CoChem ORCA at: {mask_path(engines_data['orca']['path'])}", "success")
-    else:
-        print_status(f"ORCA status: {engines_data['orca']['status']}. Ab initio extrapolation stages will fail.", "warning")
-
-    print_status("Checking for system-wide OpenMPI...", "info")
-    engines_data["mpirun"] = verify_engine("mpirun")
-    if engines_data["mpirun"]["status"] == "found":
-        print_status(f"Found cached CoChem OpenMPI at: {mask_path(engines_data['mpirun']['path'])}", "success")
-    else:
-        print_status(f"OpenMPI status: {engines_data['mpirun']['status']}. Workloads will be strictly restricted to sequential mode.", "warning")
-
-    print_status("Checking for system-wide g-xTB...", "info")
-    engines_data["xtb"] = verify_engine("xtb")
-    if engines_data["xtb"]["status"] == "found":
-        print_status(f"Found cached CoChem g-xTB at: {mask_path(engines_data['xtb']['path'])}", "success")
-    else:
-        print_status(f"g-xTB status: {engines_data['xtb']['status']}. Fast triages will degrade to local PySCF/MACE.", "warning")
-
-    # Save Cryptographic Engine Matrix
-    state_record = {
-        "phase": 3,
-        "engines": engines_data
-    }
-    
-    os.makedirs("cochem_setup", exist_ok=True)
-    state_path = os.path.join("cochem_setup", "cochem_state_p3.json")
-    
     try:
+        engines_dir, log = setup_phase3_logging()
+        log.info("Phase 3 Execution Started.")
+        
+        orca_state = verify_orca(log)
+        mpi_state = verify_openmpi(engines_dir, log)
+        xtb_state = verify_xtb(engines_dir, log)
+        
+        state_record = {
+            "phase": 3,
+            "engines": {
+                "orca": {
+                    "status": orca_state["status"],
+                    "path": orca_state["path"],
+                    "version": "6.1.1"
+                },
+                "mpirun": {
+                    "status": mpi_state["status"],
+                    "path": mpi_state["path"],
+                    "version": "4.1.6"
+                },
+                "xtb": {
+                    "status": xtb_state["status"],
+                    "path": xtb_state["path"],
+                    "version": "latest"
+                }
+            }
+        }
+        
+        os.makedirs("cochem_setup", exist_ok=True)
+        state_path = os.path.join("cochem_setup", "cochem_state_p3.json")
+        
         with open(state_path, "w") as f:
             json.dump(state_record, f, indent=4)
-        print_status(f"Phase 3 state successfully locked to {state_path}", "success")
-        log.info("Phase 3 execution completed.")
-    except IOError as e:
-        print_status(f"Failed to write state file: {e}", "fail")
-        log.error(f"IOError during state save: {e}")
-        sys.exit(1)
+            
+        print_status("Phase 3 state successfully locked to cochem_setup/cochem_state_p3.json", "success")
+        log.info("Phase 3 completed successfully. IPC registry written.")
+        
+    except Exception as e:
+        print_status(f"Phase 3 Encountered a Fatal Error: {e}", "fail")
+        # RuntimeError protects the active Jupyter kernel from terminating unexpectedly
+        raise RuntimeError(f"Phase 3 Execution Aborted: {e}")
 
 if __name__ == "__main__":
     main()

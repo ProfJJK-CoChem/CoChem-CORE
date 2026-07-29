@@ -1,3 +1,4 @@
+# cochem_canvas_target: cochem_setup/cochem_setup_phase_1.py
 #!/usr/bin/env python3
 """
 CoChem-CORE Setup Phase 1: Core System Auditing & Profiling
@@ -7,130 +8,171 @@ and sanitizes ghost dependencies to prevent library collisions.
 
 import os
 import sys
-import platform
 import json
+import hashlib
+import platform
+import subprocess
+import shutil
 import logging
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
-# Try to import resource for stack sizing (POSIX only)
 try:
     import resource
-    HAS_RESOURCE = True
 except ImportError:
-    HAS_RESOURCE = False
+    resource = None  # Windows fallback, though CoChem natively demands Linux/WSL for engine stability
 
-# ---------------------------------------------------------
-# UI & LOGGING PROTOCOLS
-# ---------------------------------------------------------
-class Colors:
-    HEADER = '\033[95m'
-    OKBLUE = '\033[94m'
-    OKCYAN = '\033[96m'
-    OKGREEN = '\033[92m'
-    WARNING = '\033[93m'
-    FAIL = '\033[91m'
-    ENDC = '\033[0m'
-    BOLD = '\033[1m'
-
-def print_status(msg: str, status: str = "info") -> None:
-    """Standardized console UI output."""
-    if status == "success":
-        print(f" {Colors.OKGREEN}✅ {msg}{Colors.ENDC}")
-    elif status == "warning":
-        print(f" {Colors.WARNING}⚠️ {msg}{Colors.ENDC}")
-    elif status == "fail":
-        print(f" {Colors.FAIL}❌ {msg}{Colors.ENDC}")
-    else:
-        print(f" {Colors.OKCYAN}➡️ {msg}{Colors.ENDC}")
-
-def setup_logging() -> logging.Logger:
-    """Initializes the diagnostic rotating logger."""
-    log_dir = "Logs"
-    os.makedirs(log_dir, exist_ok=True)
-    logger = logging.getLogger("CoChem_Phase1")
+def setup_airgap_logging() -> Path:
+    """Configures the persistent logging subsystem within the strict Artifact Air-Gap."""
+    artifact_dir = os.environ.get("COCHEM_ARTIFACT_DIR")
+    if not artifact_dir:
+        raise RuntimeError("❌ FATAL: COCHEM_ARTIFACT_DIR not set. Must run via Master Orchestrator.")
+    
+    log_dir = Path(artifact_dir) / "Logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    
+    log_file = log_dir / "cochem_phase1_audit.log"
+    
+    # Use RotatingFileHandler to prevent log bloat over time
+    handler = RotatingFileHandler(log_file, maxBytes=5*1024*1024, backupCount=2)
+    formatter = logging.Formatter('%(asctime)s - [%(levelname)s] - %(message)s')
+    handler.setFormatter(formatter)
+    
+    logger = logging.getLogger()
     logger.setLevel(logging.INFO)
+    # Clear existing handlers to prevent duplicate lines if run interactively
+    if logger.hasHandlers():
+        logger.handlers.clear()
+    logger.addHandler(handler)
     
-    if not logger.handlers:
-        handler = RotatingFileHandler(os.path.join(log_dir, 'cochem_phase1_sys.log'), maxBytes=5*1024*1024, backupCount=3)
-        formatter = logging.Formatter('%(asctime)s - %(levelname)s - [Phase1] - %(message)s')
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
-        
-    return logger
+    registry_dir = Path(artifact_dir) / "Registry"
+    registry_dir.mkdir(parents=True, exist_ok=True)
+    return registry_dir
 
-log = setup_logging()
-
-# ---------------------------------------------------------
-# CORE FUNCTIONS
-# ---------------------------------------------------------
-
-def sanitize_environment() -> None:
-    """Strips Python and Conda paths from the OS environment to prevent C++ collisions."""
-    print_status("Sanitizing OS environment of ghost libraries...", "info")
-    dirty_keys = ['LD_LIBRARY_PATH', 'PYTHONPATH', 'PYTHONHOME']
-    for key in dirty_keys:
-        if key in os.environ:
-            del os.environ[key]
-            log.info(f"Purged transient environment variable: {key}")
-    print_status("Environment sanitized. OpenMPI and ORCA dependencies isolated.", "success")
-
-def expand_stack_size() -> None:
-    """Expands the POSIX stack size limit to 'unlimited' to prevent ORCA segmentation faults."""
-    print_status("Checking POSIX Stack Size limits...", "info")
-    if HAS_RESOURCE:
-        try:
-            resource.setrlimit(resource.RLIMIT_STACK, (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
-            print_status("OS Stack Size expanded to unlimited (Required for Coupled Cluster).", "success")
-            log.info("POSIX stack size successfully expanded to infinity.")
-        except Exception as e:
-            print_status(f"Could not explicitly set unlimited stack size. {e}", "warning")
-            log.warning(f"Resource limit expansion failed: {e}")
+def purge_ghost_dependencies():
+    """Actively wipes legacy library paths to prevent C++ ABI collisions in the micro-silos."""
+    purged = []
+    for bad_env in ["LD_LIBRARY_PATH", "PYTHONPATH"]:
+        if bad_env in os.environ:
+            os.environ.pop(bad_env, None)
+            purged.append(bad_env)
+    
+    if purged:
+        msg = f"🧹 Purged ghost dependencies ({', '.join(purged)}) to ensure silo sterility."
+        print(msg)
+        logging.info(msg)
     else:
-        print_status("Host is non-POSIX (Windows). Skipping stack expansion.", "warning")
+        logging.info("Environment clean. No ghost dependencies found.")
 
-def audit_os() -> dict:
-    """Returns OS specifics to ensure we are pulling correct binaries."""
-    print_status("Auditing Hypervisor & Kernel architecture...", "info")
-    os_info = {
-        "system": platform.system(),
-        "release": platform.release(),
-        "version": platform.version(),
-        "machine": platform.machine(),
-        "python_version": platform.python_version()
-    }
-    log.info(f"OS Audit complete: {os_info}")
-    return os_info
+def tune_system_stack():
+    """Expands the OS stack limit to prevent Deep Coupled-Cluster Segfaults."""
+    if resource:
+        try:
+            soft, hard = resource.getrlimit(resource.RLIMIT_STACK)
+            resource.setrlimit(resource.RLIMIT_STACK, (hard, hard))
+            msg = f"📈 OS Stack Size tuned to maximum limit ({hard}) for heavy Tensor evaluations."
+            print(msg)
+            logging.info(msg)
+        except Exception as e:
+            msg = f"⚠️ Warning: Could not tune OS stack limits: {e}"
+            print(msg)
+            logging.warning(msg)
+    else:
+        logging.info("OS Stack tuning bypassed (Non-POSIX OS detected).")
 
-# ---------------------------------------------------------
-# MAIN EXECUTION
-# ---------------------------------------------------------
+def verify_toolchain():
+    """Programmatically verifies the presence of essential Linux system build tools."""
+    tools = ['gcc', 'g++', 'make', 'git']
+    missing = []
+    
+    for tool in tools:
+        if shutil.which(tool) is None:
+            missing.append(tool)
+            
+    if missing:
+        msg = f"FATAL: Missing essential build tools required for CoChem Silos: {', '.join(missing)}"
+        logging.error(msg)
+        raise RuntimeError(f"❌ {msg}\n(Hint: Run 'sudo apt install build-essential git')")
+        
+    msg = "✅ Essential C++ and system toolchain verified."
+    print(msg)
+    logging.info(msg)
+
+def inspect_memory_ceiling():
+    """Audits virtual memory limits to ensure out-of-core HDF5 streaming will not bottleneck."""
+    if platform.system().lower() == "linux":
+        map_count_file = Path("/proc/sys/vm/max_map_count")
+        if map_count_file.exists():
+            try:
+                count = int(map_count_file.read_text().strip())
+                if count < 65530:
+                    msg = f"⚠️ WARNING: vm.max_map_count is low ({count}). Out-of-core HDF5 streams may bottleneck."
+                    print(msg)
+                    logging.warning(msg)
+                else:
+                    msg = f"✅ Virtual memory map ceiling optimal ({count})."
+                    print(msg)
+                    logging.info(msg)
+            except Exception as e:
+                logging.error(f"Failed to read vm.max_map_count: {e}")
+
+def check_fast_pass(registry_dir: Path) -> dict:
+    """Generates a hardware/OS hash and checks if we can skip heavy downstream profiling."""
+    sys_str = f"{platform.platform()}_{platform.python_version()}"
+    sys_hash = hashlib.sha256(sys_str.encode()).hexdigest()
+    
+    config_path = registry_dir / "cochem_system_config.json"
+    if config_path.exists():
+        try:
+            with open(config_path, "r") as f:
+                config = json.load(f)
+                if config.get("system_hash") == sys_hash:
+                    return {"fast_pass": True, "hash": sys_hash}
+        except Exception as e:
+            logging.warning(f"Fast-pass cache read failed: {e}")
+            
+    return {"fast_pass": False, "hash": sys_hash}
+
 def main():
-    print(f"\n{Colors.BOLD}--- CoChem Phase 1: System Audit ---{Colors.ENDC}")
-    
-    sanitize_environment()
-    expand_stack_size()
-    os_metadata = audit_os()
-    
-    # Store parameters for downstream Phase 5 aggregation
-    state_record = {
-        "phase": 1,
-        "os_info": os_metadata,
-        "python_executable": sys.executable,
-        "python_version": platform.python_version()
-    }
-    
-    os.makedirs("cochem_setup", exist_ok=True)
-    state_path = os.path.join("cochem_setup", "cochem_state_p1.json")
+    print("\n=======================================================")
+    print(" CoChem Phase 1: Core System Auditing & Profiling ")
+    print("=======================================================\n")
     
     try:
-        with open(state_path, "w") as f:
-            json.dump(state_record, f, indent=4)
-        print_status(f"Phase 1 state successfully locked to {state_path}", "success")
-        log.info("Phase 1 execution completed and state saved.")
-    except IOError as e:
-        print_status(f"Failed to write state file: {e}", "fail")
-        log.error(f"IOError during state save: {e}")
-        sys.exit(1)
+        registry_dir = setup_airgap_logging()
+        logging.info("Phase 1 Execution Started.")
+        
+        purge_ghost_dependencies()
+        tune_system_stack()
+        verify_toolchain()
+        inspect_memory_ceiling()
+        
+        fast_pass_status = check_fast_pass(registry_dir)
+        if fast_pass_status["fast_pass"]:
+            msg = "⚡ Valid CoChem config detected. Fast-Pass caching enabled."
+            print(msg)
+            logging.info(msg)
+            
+        state = {
+            "PHASE_1_COMPLETE": True,
+            "SYSTEM_HASH": fast_pass_status["hash"],
+            "FAST_PASS_ACTIVE": fast_pass_status["fast_pass"],
+            "OS_PLATFORM": platform.platform(),
+            "PYTHON_VER": platform.python_version()
+        }
+        
+        state_file = registry_dir / "cochem_state_p1.json"
+        with open(state_file, "w") as f:
+            json.dump(state, f, indent=4)
+            
+        msg = f"✅ Phase 1 state safely written to Air-Gap: {state_file.name}"
+        print(msg)
+        logging.info("Phase 1 Execution Completed Successfully.")
+        
+    except Exception as e:
+        print(f"\n❌ Phase 1 Encountered a Fatal Error: {e}")
+        # RuntimeError replaces sys.exit(1) to prevent annihilating the Jupyter kernel
+        raise RuntimeError(f"Phase 1 aborted: {e}")
 
 if __name__ == "__main__":
     main()
