@@ -154,10 +154,14 @@ def build_torq_silo(conda_path: str, log: logging.Logger) -> bool:
     env_name = "cochem_torq_silo"
     print_status(f"Building Discovery Silo '{env_name}' (Python 3.11, MACE, NetworkX)...", "info")
     
-    # 1. Create Base Env
-    if not run_conda_cmd([conda_path, "create", "-y", "-n", env_name, "python=3.11", "numpy", "scipy", "networkx", "matplotlib"], log):
-        print_status("Failed to create base TORQ Conda environment.", "fail")
-        return False
+    # 1. Create Base Env with Upgrade Fallback
+    create_cmd = [conda_path, "create", "-y", "-c", "conda-forge", "-n", env_name, "python=3.11", "numpy", "scipy", "networkx", "matplotlib"]
+    if not run_conda_cmd(create_cmd, log):
+        log.warning(f"Conda create failed. Attempting forced upgrade on existing {env_name}...")
+        upgrade_cmd = [conda_path, "install", "-y", "-c", "conda-forge", "-n", env_name, "python=3.11", "numpy", "scipy", "networkx", "matplotlib"]
+        if not run_conda_cmd(upgrade_cmd, log):
+            print_status("Failed to create or upgrade base TORQ Conda environment.", "fail")
+            return False
         
     # 2. Upgrade Pip
     enforce_pip_upgrades(conda_path, env_name, log)
@@ -178,8 +182,13 @@ def build_gpu_silo(conda_path: str, log: logging.Logger) -> bool:
     env_name = "cochem_gpu_silo"
     print_status(f"Building Ab Initio GPU Silo '{env_name}' (GPU4PySCF)...", "info")
     
-    if not run_conda_cmd([conda_path, "create", "-y", "-n", env_name, "python=3.11", "numpy", "scipy", "h5py"], log):
-         return False
+    create_cmd = [conda_path, "create", "-y", "-c", "conda-forge", "-n", env_name, "python=3.11", "numpy", "scipy", "h5py"]
+    if not run_conda_cmd(create_cmd, log):
+        log.warning(f"Conda create failed. Attempting forced upgrade on existing {env_name}...")
+        upgrade_cmd = [conda_path, "install", "-y", "-c", "conda-forge", "-n", env_name, "python=3.11", "numpy", "scipy", "h5py"]
+        if not run_conda_cmd(upgrade_cmd, log):
+            print_status("Failed to create or upgrade Ab Initio GPU Silo.", "fail")
+            return False
          
     enforce_pip_upgrades(conda_path, env_name, log)
     
