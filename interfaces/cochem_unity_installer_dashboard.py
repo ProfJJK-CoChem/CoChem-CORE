@@ -2,6 +2,7 @@
 """
 CoChem-UNITY: Stage 0.1 - Pipeline Installer Dashboard
 Generates the dynamic GUI for provisioning the CoChem micro-silos.
+Includes Option 3: Artifacts Directory Bridge for Offline Module Ingestion.
 """
 import os
 import json
@@ -10,6 +11,7 @@ import sys
 import subprocess
 import tempfile
 import shutil
+import zipfile
 from pathlib import Path
 import ipywidgets as widgets
 from IPython.display import display, clear_output
@@ -23,9 +25,16 @@ ECOSYSTEM_REGISTRY = {
 class UnityInstallerGUI:
     def __init__(self):
         self.buttons = {}
-        self.engine_registry = Path("/home/vscode/CoChem_Artifacts/Registry/Engines")
-        self.engine_registry.mkdir(parents=True, exist_ok=True)
         self.artifact_dir = Path(os.environ.get("COCHEM_ARTIFACT_DIR", str(Path.home() / "CoChem_Artifacts")))
+        
+        # Engine Registry for ORCA tarballs
+        self.engine_registry = self.artifact_dir / "Registry" / "Engines"
+        self.engine_registry.mkdir(parents=True, exist_ok=True)
+        
+        # Module Registry for CoChem GitHub Zips
+        self.module_registry = self.artifact_dir / "Registry" / "Modules"
+        self.module_registry.mkdir(parents=True, exist_ok=True)
+        
         self.log_file = self.artifact_dir / "Logs" / "cochem_unity_deploy.log"
         self.hint_file = self.artifact_dir / "Registry" / "host_orca_path.txt"
         self._build_ui()
@@ -55,15 +64,52 @@ class UnityInstallerGUI:
             if not repo_url:
                 print(f"ℹ️ {module} has no separate repository target.")
                 continue
+
+            # --- OPTION 3: ARTIFACTS BRIDGE SIDELOADING ---
+            sideload_success = False
+            possible_zips = [
+                self.module_registry / f"{module}.zip",
+                self.module_registry / f"{module}-main.zip",
+                self.engine_registry / f"{module}.zip",
+                self.artifact_dir / f"{module}.zip",
+                self.artifact_dir / f"{module}-main.zip"
+            ]
+            
+            for zpath in possible_zips:
+                if zpath.exists():
+                    print(f"📦 Air-Gap Bridge: Sideloading {module} from {zpath}...")
+                    try:
+                        with zipfile.ZipFile(zpath, 'r') as zip_ref:
+                            zip_ref.extractall(workspace_root)
+                        
+                        # Handle GitHub's default "-main" or "-master" extraction suffix
+                        for suffix in ["-main", "-master"]:
+                            extracted_dir = workspace_root / f"{module}{suffix}"
+                            if extracted_dir.exists() and not target_dir.exists():
+                                extracted_dir.rename(target_dir)
+                                
+                        if target_dir.exists():
+                            print(f"✅ Successfully extracted {module} into workspace. Network bypassed.")
+                            sideload_success = True
+                            break
+                    except Exception as e:
+                        print(f"⚠️ Failed to extract {zpath}: {e}")
+            
+            if sideload_success:
+                continue
+            # ----------------------------------------------
+
             try:
                 # Pre-check remote visibility so optional module failures are explicit and non-blocking.
+                print(f"🌐 Attempting network clone for {module}...")
                 ls = subprocess.run(["git", "ls-remote", "--heads", repo_url], check=False, capture_output=True, text=True)
                 if ls.returncode != 0:
                     alt_url = repo_url if repo_url.endswith(".git") else f"{repo_url}.git"
                     ls_alt = subprocess.run(["git", "ls-remote", "--heads", alt_url], check=False, capture_output=True, text=True)
                     if ls_alt.returncode != 0:
                         err = (ls.stderr or ls_alt.stderr or "").strip() or "remote not accessible"
-                        print(f"⚠️ Skipping {module}: repository not reachable from this environment ({err}).")
+                        print(f"⚠️ Skipping {module}: repository not reachable via network ({err}).")
+                        print(f"💡 FIX: Download {module}.zip from GitHub and drop it into {self.module_registry}")
                         continue
                     repo_url = alt_url
 
@@ -113,7 +159,6 @@ class UnityInstallerGUI:
             return False
 
         if candidate.is_dir():
-            # Common layouts: <root>/orca or <root>/bin/orca
             options = [candidate / "orca", candidate / "bin" / "orca", candidate / "orca.exe", candidate / "bin" / "orca.exe"]
             candidate = next((opt for opt in options if opt.exists()), candidate)
 
@@ -124,8 +169,6 @@ class UnityInstallerGUI:
                 print(f"ℹ️ Detected host mount roots: {', '.join(mounts)}")
             else:
                 print("⚠️ No host mount roots detected inside container (/mnt/c, /host_mnt/c, /run/desktop/mnt/host/c, /host_orca).")
-                print("➡️ Use ORCA archive staging, or rebuild devcontainer with a bind mount to /host_orca.")
-            print("💡 If you add a bind mount, set Host ORCA path to /host_orca/orca.exe (or /host_orca/orca).")
             return False
 
         verify_dir = Path(tempfile.mkdtemp(prefix="cochem_orca_verify_", dir=str(self.artifact_dir)))
@@ -142,9 +185,6 @@ class UnityInstallerGUI:
                 print(f"✅ Host ORCA verification passed via: {candidate}")
                 return True
             print("❌ Host ORCA verification failed.")
-            print(f"   Return code: {result.returncode}")
-            if result.stderr:
-                print(f"   stderr: {result.stderr.strip()}")
             return False
         except Exception as e:
             print(f"❌ Host ORCA verification exception: {e}")
@@ -160,12 +200,11 @@ class UnityInstallerGUI:
                     return True
         return False
 
-    def _list_staged_orca_archives(self) -> list:
-        patterns = ["orca*.tar.xz", "orca*.tz", "orca*.tar.gz", "ORCA*.tar.xz", "ORCA*.tz", "ORCA*.tar.gz"]
+    def _list_staged_archives(self, registry_path: Path, patterns: list) -> list:
         seen = set()
         staged = []
         for pattern in patterns:
-            for candidate in self.engine_registry.glob(pattern):
+            for candidate in registry_path.glob(pattern):
                 if not candidate.is_file():
                     continue
                 key = str(candidate.resolve())
@@ -185,11 +224,9 @@ class UnityInstallerGUI:
 
         log_dir = self.artifact_dir / "Logs"
         log_dir.mkdir(parents=True, exist_ok=True)
-        log_file = self.log_file
-
         env = os.environ.copy()
         try:
-            log_handle = open(log_file, "a", encoding="utf-8")
+            log_handle = open(self.log_file, "a", encoding="utf-8")
             subprocess.Popen(
                 [sys.executable, str(orchestrator)],
                 cwd=str(repo_root),
@@ -199,7 +236,7 @@ class UnityInstallerGUI:
                 start_new_session=True,
             )
             print(f"🚀 Setup started in background via {orchestrator.name}")
-            print(f"📄 Live log: {log_file}")
+            print(f"📄 Live log: {self.log_file}")
             self._render_status()
         except Exception as e:
             print(f"❌ Failed to launch orchestrator: {e}")
@@ -214,9 +251,7 @@ class UnityInstallerGUI:
 
         if not lines:
             return "Deployment log is present but currently empty."
-
-        tail = lines[-max_lines:]
-        return "\n".join(tail)
+        return "\n".join(lines[-max_lines:])
 
     def _render_status(self):
         with self.status_out:
@@ -252,14 +287,9 @@ class UnityInstallerGUI:
             clear_output()
             if self._persist_host_orca_hint(self.host_orca_path.value):
                 print(f"✅ Host ORCA hint saved to: {self.hint_file}")
-                self.host_orca_help.value = (
-                    "<span style='color: green;'>Host ORCA hint saved. It will be consumed by Phase 3 detection.</span>"
-                )
+                self.host_orca_help.value = "<span style='color: green;'>Host ORCA hint saved.</span>"
             else:
-                print("⚠️ Host ORCA path is empty. Enter a path first.")
-                self.host_orca_help.value = (
-                    "<span style='color: #aa7700;'>Enter a host ORCA path, then click Save Host ORCA Hint.</span>"
-                )
+                print("⚠️ Host ORCA path is empty.")
 
     def _on_clear_host_orca_hint(self, _):
         with self.out:
@@ -268,22 +298,22 @@ class UnityInstallerGUI:
             if self.hint_file.exists():
                 try:
                     self.hint_file.unlink()
-                    print(f"✅ Removed saved host ORCA hint: {self.hint_file}")
+                    print(f"✅ Removed saved host ORCA hint.")
                 except OSError as e:
                     print(f"❌ Failed to remove saved host ORCA hint: {e}")
-            else:
-                print("ℹ️ No saved host ORCA hint found to clear.")
-            self.host_orca_help.value = (
-                "<span style='color: gray;'>Optional helper for host ORCA reuse. Save a path to assist Phase 3 detection.</span>"
-            )
 
     def _build_ui(self):
         self.out = widgets.Output()
         self.status_out = widgets.Output(layout=widgets.Layout(border="1px solid #ccc", padding="8px", max_height="260px", overflow_y="auto"))
         title = widgets.HTML("<h2>CoChem-UNITY: Ecosystem Deployment Dashboard</h2>")
+        
         artifact_hint = widgets.HTML(
-            f"<b>CoChem Artifacts:</b> {Path.home() / 'CoChem_Artifacts'}<br>"
-            f"<b>ORCA Drop Target:</b> {self.engine_registry}"
+            f"<div style='background-color: #f8f9fa; padding: 10px; border-radius: 5px; border-left: 4px solid #0366d6; margin-bottom: 15px;'>"
+            f"<b>CoChem Artifacts Bridge:</b> {self.artifact_dir}<br>"
+            f"<b>1. ORCA Drop Target:</b> {self.engine_registry}<br>"
+            f"<b>2. Module Drop Target (.zip):</b> {self.module_registry}<br>"
+            f"<i style='font-size: 0.9em; color: #555;'>Offline? Download the Github .zip files and drop them into the target folder above.</i>"
+            f"</div>"
         )
         
         checks = []
@@ -295,20 +325,18 @@ class UnityInstallerGUI:
             
         self.deploy_target = widgets.Dropdown(options=["Codespaces", "Local DevContainer", "HPC SLURM"], description="Target:")
         self.host_orca_path = widgets.Text(
-            value="",
-            placeholder="Optional: C:\\ORCA\\orca.exe, /opt/orca/orca, or /host_orca/orca.exe",
-            description="Host ORCA:",
-            style={"description_width": "initial"},
-            layout=widgets.Layout(width="100%")
+            value="", placeholder="Optional: C:\\ORCA\\orca.exe", description="Host ORCA:",
+            style={"description_width": "initial"}, layout=widgets.Layout(width="100%")
         )
 
+        # Updated to accept .zip for Offline Sideloading
         self.orca_upload = widgets.FileUpload(
-            accept=".tar.xz,.tz,.tar.gz",
-            multiple=False,
-            description="Drop ORCA Archive"
+            accept=".tar.xz,.tz,.tar.gz,.zip",
+            multiple=True,
+            description="Drop Archives"
         )
         self.orca_upload.observe(self._on_orca_upload, names="value")
-        self.stage_orca_btn = widgets.Button(description="Stage ORCA Upload", button_style="primary")
+        self.stage_orca_btn = widgets.Button(description="Stage Uploads", button_style="primary")
         self.stage_orca_btn.on_click(self._on_stage_orca_click)
 
         self.submit_btn = widgets.Button(description="Lock & Deploy", button_style="success")
@@ -320,20 +348,15 @@ class UnityInstallerGUI:
             "<span style='color: gray;'>Use Refresh to view latest deployment output.</span>"
         )
         self.host_orca_assist_title = widgets.HTML("<h4>Host ORCA Assist</h4>")
-        self.host_orca_help = widgets.HTML(
-            "<span style='color: gray;'>Optional helper for host ORCA reuse. Save a path to assist Phase 3 detection. If you use a bind mount, prefer /host_orca/orca.exe.</span>"
-        )
-        self.save_host_orca_btn = widgets.Button(description="Save Host ORCA Hint", button_style="primary")
+        self.host_orca_help = widgets.HTML("<span style='color: gray;'>Optional helper for host ORCA reuse.</span>")
+        self.save_host_orca_btn = widgets.Button(description="Save Hint", button_style="primary")
         self.save_host_orca_btn.on_click(self._on_save_host_orca_hint)
-        self.clear_host_orca_btn = widgets.Button(description="Clear Host ORCA Hint", button_style="warning")
+        self.clear_host_orca_btn = widgets.Button(description="Clear Hint", button_style="warning")
         self.clear_host_orca_btn.on_click(self._on_clear_host_orca_hint)
 
         saved_hint = self._load_saved_host_orca_hint()
         if saved_hint and not self.host_orca_path.value:
             self.host_orca_path.value = saved_hint
-            self.host_orca_help.value = (
-                f"<span style='color: green;'>Loaded saved Host ORCA hint from: {self.hint_file}</span>"
-            )
 
         self.refresh_btn = widgets.Button(description="Refresh Status", button_style="info")
         self.refresh_btn.on_click(self._on_refresh_status)
@@ -348,8 +371,7 @@ class UnityInstallerGUI:
             widgets.VBox(checks),
             self.deploy_target,
             self.host_orca_path,
-            self.orca_upload,
-            self.stage_orca_btn,
+            widgets.HBox([self.orca_upload, self.stage_orca_btn]),
             self.submit_btn,
             self.status_title,
             self.status_info,
@@ -377,15 +399,22 @@ class UnityInstallerGUI:
     def _stage_orca_upload(self, files) -> bool:
         entries = self._extract_upload_entries(files)
         if not entries:
-            print("⚠️ No ORCA upload payload detected yet.")
+            print("⚠️ No upload payload detected yet.")
             return False
 
         staged_any = False
         for fname, fdata in entries:
-            if not fname or not fname.lower().endswith((".tar.xz", ".tz", ".tar.gz")):
+            fname_lower = fname.lower()
+            if not fname_lower.endswith((".tar.xz", ".tz", ".tar.gz", ".zip")):
                 print(f"❌ Unsupported archive type: {fname or 'unknown'}")
                 continue
-            target = self.engine_registry / fname
+            
+            # Sort zip files to Modules registry, and tarballs to Engines registry
+            if fname_lower.endswith(".zip"):
+                target = self.module_registry / fname
+            else:
+                target = self.engine_registry / fname
+                
             if isinstance(fdata, dict):
                 content = fdata.get("content", b"")
             else:
@@ -403,10 +432,9 @@ class UnityInstallerGUI:
             if size == 0:
                 print(f"❌ Staging failed (zero bytes): {target}")
                 continue
-            print(f"✅ ORCA archive staged to: {target} ({size} bytes)")
+            print(f"✅ Archive staged to: {target} ({size} bytes)")
             staged_any = True
 
-        print(f"📦 Engine staging directory: {self.engine_registry}")
         return staged_any
 
     def _on_stage_orca_click(self, _):
@@ -414,31 +442,22 @@ class UnityInstallerGUI:
             clear_output()
             staged = self._stage_orca_upload(getattr(self.orca_upload, "value", None))
             if staged:
-                print("➡️ ORCA archive is staged and ready for setup.")
-            archives = self._list_staged_orca_archives()
-            if archives:
-                print("📦 Currently staged ORCA archives:")
-                for archive in archives:
-                    print(f" - {archive} ({archive.stat().st_size} bytes)")
-            else:
-                print(f"⚠️ No staged ORCA archives found in: {self.engine_registry}")
+                print("➡️ Archives are staged and ready for setup.")
+                
+            eng_archives = self._list_staged_archives(self.engine_registry, ["*tar*"])
+            if eng_archives:
+                print("\n📦 Staged Engine archives:")
+                for a in eng_archives: print(f" - {a.name} ({a.stat().st_size} bytes)")
+                
+            mod_archives = self._list_staged_archives(self.module_registry, ["*.zip"])
+            if mod_archives:
+                print("\n📦 Staged Module archives:")
+                for a in mod_archives: print(f" - {a.name} ({a.stat().st_size} bytes)")
 
     def _on_orca_upload(self, change):
         files = change.get("new") if isinstance(change, dict) else getattr(change, "new", None)
-        if not files:
-            return
-        with self.out:
-            clear_output()
-            staged = self._stage_orca_upload(files)
-            if staged:
-                print("➡️ ORCA archive is staged and ready for setup.")
-            archives = self._list_staged_orca_archives()
-            if archives:
-                print("📦 Currently staged ORCA archives:")
-                for archive in archives:
-                    print(f" - {archive} ({archive.stat().st_size} bytes)")
-            else:
-                print(f"⚠️ No staged ORCA archives found in: {self.engine_registry}")
+        if not files: return
+        self._on_stage_orca_click(None)
 
     def _on_submit(self, b):
         with self.out:
@@ -469,41 +488,34 @@ class UnityInstallerGUI:
             if host_orca_path:
                 print("🔬 Verifying host ORCA execution pathway from container...")
                 host_orca_verified = self._verify_host_orca_path(host_orca_path)
-                if not host_orca_verified:
-                    if self._has_staged_orca_archive():
-                        print("⚠️ Host ORCA verification failed, but a staged ORCA archive was found. Continuing with archive-based setup.")
-                    else:
-                        print("⚠️ Host ORCA verification failed. Fix path/mount access or stage ORCA archive instead.")
-                        self.submit_btn.disabled = False
-                        self.submit_btn.description = "Lock & Deploy"
-                        self._render_status()
-                        return
+                if not host_orca_verified and not self._has_staged_orca_archive():
+                    print("⚠️ Host ORCA verification failed. Fix path/mount access or stage ORCA archive instead.")
+                    self.submit_btn.disabled = False
+                    self.submit_btn.description = "Lock & Deploy"
+                    self._render_status()
+                    return
                 elif self._persist_host_orca_hint(host_orca_path):
                     print(f"✅ Host ORCA hint recorded: {self.hint_file}")
                 
             print(f"✅ SUCCESS: Manifest written to {manifest_path}")
             print(f"✅ Selected modules: {', '.join(selected_modules)}")
 
-            print("\n🔄 Cloning selected repositories...")
+            print("\n🔄 Initializing Workspace Repositories (Air-Gap priority)...")
             self._clone_selected_repos(selected_modules)
 
             started = False
             staged_now = False
             if not host_orca_verified:
-                # Stage the current widget payload before checking registry state.
                 staged_now = self._stage_orca_upload(getattr(self.orca_upload, "value", None))
-            # If host ORCA path is verified, setup can proceed without staged archive.
+
             if host_orca_verified or staged_now or self._has_staged_orca_archive():
-                if not host_orca_verified:
-                    print("\n🔄 ORCA archive detected; launching setup orchestrator...")
-                else:
-                    print("\n🔄 Verified host ORCA path; launching setup orchestrator...")
+                print("\n🔄 Launching setup orchestrator...")
                 self._launch_setup_orchestrator()
                 started = True
             else:
-                print("\n⚠️ ORCA archive not detected in engine registry yet.")
+                print("\n⚠️ ORCA archive not detected in engine registry.")
                 print(f"📦 Expected location: {self.engine_registry}")
-                print("➡️ Upload ORCA archive first, then click Lock & Deploy again to start setup.")
+                print("➡️ Upload ORCA archive first, or type 'BYPASSED' into Host ORCA field if you wish to run in Python-Only mode.")
 
             if started:
                 self.submit_btn.disabled = True
