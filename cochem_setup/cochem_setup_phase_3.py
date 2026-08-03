@@ -56,6 +56,8 @@ def check_fast_pass(state_file: Path) -> bool:
             path = info.get("path")
             stored_hash = info.get("sha256")
             if path and stored_hash and stored_hash != "N/A":
+                if path == "BYPASSED" and stored_hash == "BYPASSED":
+                    continue
                 if calculate_hash(path) != stored_hash:
                     return False
         print("⚡ Fast-Pass Caching: All engine hashes match perfectly. Bypassing Phase 3 Deployment.")
@@ -76,6 +78,10 @@ def verify_execution(binary_path: str, version_flag: str = "--version") -> bool:
 
 def test_orca_execution(orca_path: str) -> bool:
     """Deep ORCA Execution Verification: Tests actual basis library integration."""
+    if orca_path == "BYPASSED":
+        print("⏩ Deep ORCA Verification Skipped (Engine Bypassed).")
+        return True
+
     print("🔬 Executing Deep ORCA Verification (Dummy SP Job)...")
     if sys.platform == "win32" or str(orca_path).endswith(".exe"):
         return True # Bypass for bridged Windows .exe timeouts
@@ -364,6 +370,10 @@ def deploy_airgapped_orca():
         
     archives = list(registry_dir.glob("orca*6*.t*")) + list(registry_dir.glob("*.tar.xz")) + list(registry_dir.glob("*.tz"))
     if not archives:
+        if os.environ.get("COCHEM_ENGINE_BYPASS", "").upper() == "TRUE":
+            print("⏩ COCHEM_ENGINE_BYPASS flag detected. Bypassing ORCA deployment.")
+            return "BYPASSED"
+
         if prompt_and_store_host_orca_hint():
             hinted_orca = locate_system_orca()
             if hinted_orca:
@@ -371,16 +381,34 @@ def deploy_airgapped_orca():
                 return hinted_orca
 
         print("\n" + "="*60)
-        print("🛑 ORCA 6.1.1 DEPLOYMENT HALTED (FACCTS LICENSING)")
+        print("🛑 ORCA 6.1.1 ARCHIVE NOT FOUND")
         print("="*60)
         print("ORCA is proprietary software and cannot be downloaded automatically.")
         print("1. Register/Login at: https://faccts.de/")
         print("2. Download the 'ORCA 6.1.1 Linux x86-64 Shared OpenMPI 4.1.x' archive.")
         print(f"3. Move the downloaded .tar.xz file exactly here:\n   {registry_dir}")
         print("   You can also drag-and-drop the archive into the UNITY installer upload widget.")
-        print("4. Re-run the CoChem setup orchestrator.")
+        print("="*60)
+        
+        if not sys.stdin.isatty():
+            print("⚠️  Non-interactive terminal detected. Cannot prompt for bypass. Exiting.")
+            sys.exit(2)
+            
+        print("💡 ENGINE BYPASS AVAILABLE:")
+        print("   Type 'SKIP' to run CoChem in Python-Only/MLFF mode without ORCA.")
+        print("   Press Enter to retry scanning for the archive.")
         print("="*60 + "\n")
-        sys.exit(2)
+        
+        try:
+            user_choice = input("Action [Enter to retry, 'SKIP' to bypass]: ").strip().upper()
+            if user_choice == "SKIP":
+                print("⏩ Bypassing ORCA. CoChem will operate in Dry/MLFF mode.")
+                return "BYPASSED"
+            else:
+                print("🔄 Retrying...")
+                return deploy_airgapped_orca()
+        except EOFError:
+            sys.exit(2)
         
     target_archive = archives[0]
     silo_dir = Path.home() / ".cochem" / "engines" / "orca_6_1_1"
@@ -510,7 +538,7 @@ def install_crest(silo_dir: Path, xtb_path: str) -> str:
 
 def update_shell_profiles(binary_paths: dict):
     print("🔧 Updating shell profiles with verified engine paths...")
-    paths_to_add = {str(Path(v["path"]).parent) for k, v in binary_paths.items() if v and v.get("path") and Path(v["path"]).exists()}
+    paths_to_add = {str(Path(v["path"]).parent) for k, v in binary_paths.items() if v and v.get("path") and v["path"] != "BYPASSED" and Path(v["path"]).exists()}
     if not paths_to_add: return
         
     export_line = f"\n# CoChem Automated Engine Paths\nexport PATH=\"{':'.join(paths_to_add)}:$PATH\"\n"
@@ -565,7 +593,7 @@ def main():
 
     print("\n🔒 Executing cryptographic validation on binaries...")
     engine_state = {
-        "orca": {"path": orca_bin, "sha256": calculate_hash(orca_bin)},
+        "orca": {"path": orca_bin, "sha256": "BYPASSED" if orca_bin == "BYPASSED" else calculate_hash(orca_bin)},
         "openmpi": {"path": mpi_bin, "sha256": calculate_hash(mpi_bin) if mpi_bin else "N/A"},
         "g_xtb": {"path": xtb_bin, "sha256": calculate_hash(xtb_bin) if xtb_bin else "N/A"},
         "crest": {"path": crest_bin, "sha256": calculate_hash(crest_bin) if crest_bin else "N/A"}

@@ -7,7 +7,7 @@ type errors, or unmapped hardware states.
 """
 
 from typing import Dict, Any, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from datetime import datetime
 
 class HardwareConfig(BaseModel):
@@ -23,10 +23,17 @@ class HardwareConfig(BaseModel):
 
 class EngineInfo(BaseModel):
     """Pathing and cryptographic provenance for computational binaries."""
-    status: str = Field(..., description="found, missing, or permission_denied")
-    path: Optional[str] = Field(None, description="Absolute path to the executable")
+    status: str = Field(..., description="found, missing, permission_denied, or bypassed")
+    path: Optional[str] = Field(None, description="Absolute path to the executable, or 'BYPASSED'")
     version: Optional[str] = Field(None, description="Semantic version of the engine")
     hash: Optional[str] = Field(None, description="SHA-256 binary hash")
+
+    @field_validator('path')
+    @classmethod
+    def validate_bypassed_path(cls, v: Optional[str]) -> Optional[str]:
+        if v == "BYPASSED":
+            return v
+        return v
 
 class EnginePaths(BaseModel):
     orca: EngineInfo
@@ -80,7 +87,7 @@ if __name__ == "__main__":
             os_target="linux_x86_64"
         )
         mock_engines = EnginePaths(
-            orca=EngineInfo(status="found", path="/opt/orca/orca", version="6.1.1", hash="abc123mock"),
+            orca=EngineInfo(status="bypassed", path="BYPASSED", version="None", hash="None"),
             mpirun=EngineInfo(status="found", path="/usr/bin/mpirun", version="4.1.2", hash="abc"),
             xtb=EngineInfo(status="missing")
         )
