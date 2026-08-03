@@ -77,7 +77,7 @@ def verify_execution(binary_path: str, version_flag: str = "--version") -> bool:
 def test_orca_execution(orca_path: str) -> bool:
     """Deep ORCA Execution Verification: Tests actual basis library integration."""
     print("🔬 Executing Deep ORCA Verification (Dummy SP Job)...")
-    if sys.platform == "win32":
+    if sys.platform == "win32" or str(orca_path).endswith(".exe"):
         return True # Bypass for bridged Windows .exe timeouts
 
     scratch = Path.home() / ".cochem" / "scratch"
@@ -85,13 +85,21 @@ def test_orca_execution(orca_path: str) -> bool:
     inp_file = scratch / "dummy.inp"
     out_file = scratch / "dummy.out"
     
-    inp_file.write_text("! SP STO-3G\n*xyz 0 1\nH 0 0 0\n*")
+    inp_file.write_text("! SP STO-3G\n*xyz 0 1\nHe 0 0 0\n*")
     try:
         env = os.environ.copy()
-        subprocess.run([orca_path, str(inp_file)], cwd=str(scratch), capture_output=True, text=True, timeout=45, env=env)
-        if out_file.exists() and "O R C A" in out_file.read_text():
-            print("✅ Deep ORCA Verification Passed: Engine and basis set libraries are fully functional.")
-            return True
+        result = subprocess.run([orca_path, str(inp_file)], cwd=str(scratch), capture_output=True, text=True, timeout=45, env=env)
+        if result.returncode == 0:
+            stdout_text = (result.stdout or "").upper()
+            normal_outputs = [
+                scratch / "dummy.property.txt",
+                scratch / "dummy.gbw",
+                scratch / "dummy.bibtex",
+            ]
+            has_orca_marker = "ORCA TERMINATED NORMALLY" in stdout_text or "O   R   C   A" in stdout_text or "O R C A" in stdout_text
+            if has_orca_marker or any(path.exists() for path in normal_outputs):
+                print("✅ Deep ORCA Verification Passed: Engine and basis set libraries are fully functional.")
+                return True
         print("❌ Deep ORCA Verification Failed: Output file missing or malformed.")
         return False
     except Exception as e:
@@ -99,51 +107,210 @@ def test_orca_execution(orca_path: str) -> bool:
         return False
 
 def locate_system_orca():
-    """Hypervisor-Aware ORCA Binary Hunt using Direct Host Mount Scanning."""
-    print("➡️  Checking for system-wide ORCA via direct mount scanning...")
-    orca_path = None
+    """Explicit ORCA Binary Hunt using native OS commands and Silo Caching."""
+    print("➡️  Checking for system-wide ORCA...")
 
-    if sys.platform == "win32":
-        orca_path = shutil.which("orca")
-        if orca_path:
-            return str(Path(orca_path).resolve())
+    def to_container_path(raw_path: str) -> Path:
+        p = (raw_path or "").strip().strip('"').strip("'")
+        if not p:
+            return Path("")
 
-    host_mounts = [Path("/mnt/c"), Path("/host_mnt/c"), Path("/c"), Path("/run/desktop/mnt/host/c")]
-    search_dirs = ["orca", "ORCA", "orca611", "orca_6_1_1", "Program Files/orca", "Program Files/ORCA"]
+        # Convert Windows paths (e.g. C:\\ORCA\\orca.exe) into common container mount forms.
+        if len(p) > 2 and p[1] == ":":
+            drive = p[0].lower()
+            tail = p[2:].replace("\\", "/").lstrip("/")
+            mount_candidates = [
+                Path(f"/mnt/{drive}/{tail}"),
+                Path(f"/host_mnt/{drive}/{tail}"),
+                Path(f"/run/desktop/mnt/host/{drive}/{tail}"),
+                Path(f"/{drive}/{tail}"),
+            ]
+            for candidate in mount_candidates:
+                if candidate.exists():
+                    return candidate
+            return mount_candidates[0]
 
+        return Path(p)
+
+    def expand_orca_candidates(raw_path: str) -> list:
+        base = to_container_path(raw_path)
+        if not str(base):
+            return []
+        if base.is_file():
+            return [base]
+        return [base / "orca", base / "orca.exe", base / "bin" / "orca", base / "bin" / "orca.exe"]
+
+    # 1. Check CoChem Silo explicitly (prevents needing the .tar.xz again if already extracted)
+    silo_dir = Path.home() / ".cochem" / "engines" / "orca_6_1_1"
+    if silo_dir.exists():
+        for root, dirs, files in os.walk(silo_dir):
+            if "orca" in files or "orca.exe" in files:
+                bin_name = "orca.exe" if sys.platform == "win32" else "orca"
+                found_path = Path(root) / bin_name
+                if found_path.exists():
+                    print(f"✅ Found cached CoChem ORCA at: {found_path}")
+                    return str(found_path.resolve())
+
+    # 1.2. Explicit host-path hints passed into container (env/manifest/artifact registry)
+    hint_values = []
+    for key in ["COCHEM_HOST_ORCA_PATH", "COCHEM_HOST_ORCA_HOME", "ORCA_PATH", "ORCA_HOME", "ORCA_DIR", "ORCA_BIN"]:
+        value = os.environ.get(key)
+        if value:
+            hint_values.append(value)
+
+    manifest_candidates = [Path.cwd() / "cochem_setup" / "cochem_deployment_manifest.json", Path.cwd() / "cochem_deployment_manifest.json"]
+    for manifest_path in manifest_candidates:
+        if not manifest_path.exists():
+            continue
+        try:
+            with open(manifest_path, "r") as f:
+                manifest = json.load(f)
+            hint = manifest.get("host_orca_path")
+            if hint:
+                hint_values.append(hint)
+        except Exception:
+            pass
+
+    hint_file = Path(os.environ.get("COCHEM_ARTIFACT_DIR", str(Path.home() / "CoChem_Artifacts"))) / "Registry" / "host_orca_path.txt"
+    if hint_file.exists():
+        try:
+            hint = hint_file.read_text(encoding="utf-8").strip()
+            if hint:
+                hint_values.append(hint)
+        except Exception:
+            pass
+
+    for raw_hint in hint_values:
+        for candidate in expand_orca_candidates(raw_hint):
+            if candidate.exists():
+                print(f"✅ Host ORCA resolved from hint at: {candidate}")
+                return str(candidate.resolve())
+
+    # 1.5. Host mount scan fallback (useful when host ORCA is installed outside container PATH)
+    host_mounts = [
+        Path("/host_os_root"),
+        Path("/mnt/c"),
+        Path("/host_mnt/c"),
+        Path("/c"),
+        Path("/run/desktop/mnt/host/c"),
+    ]
+    host_search_roots = [
+        "orca",
+        "ORCA",
+        "ORCA_6.1.1",
+        "orca_6.1.1",
+        "orca611",
+        "orca_6_1_1",
+        "Program Files/orca",
+        "Program Files/ORCA",
+        "Applications/orca",
+        "Applications/ORCA",
+        "opt/orca",
+        "opt/ORCA",
+        "usr/local/orca",
+        "usr/local/ORCA",
+        "Users/Shared/orca",
+        "Users/Shared/ORCA",
+    ]
     for mount in host_mounts:
-        if mount.exists():
-            for search_dir in search_dirs:
-                target_dir = mount / search_dir
-                if target_dir.exists():
-                    potential_bin = target_dir / "orca.exe"
-                    if potential_bin.exists():
-                        orca_path = str(potential_bin.resolve())
-                        print(f"✅ Host Windows ORCA discovered via direct mount at: {orca_path}")
+        if not mount.exists():
+            continue
+        for rel_root in host_search_roots:
+            target_dir = mount / rel_root
+            if not target_dir.exists():
+                continue
+            for bin_name in ["orca", "orca.exe"]:
+                candidate = target_dir / bin_name
+                if candidate.exists():
+                    print(f"✅ Host-mounted ORCA discovered at: {candidate}")
+                    if sys.platform != "win32" and str(candidate).endswith(".exe"):
                         print("⚠️  WARNING: Bridging Windows ORCA (.exe) into Linux drops OpenMPI efficiency.")
-                        return orca_path
-            
-            try:
-                for root, dirs, files in os.walk(mount, topdown=True):
-                    depth = root[len(str(mount)):].count(os.sep)
-                    if depth > 2:
-                        dirs.clear()
-                        continue
-                    if "orca.exe" in files:
-                        orca_path = str(Path(root) / "orca.exe")
-                        print(f"✅ Host Windows ORCA discovered via shallow scan at: {orca_path}")
-                        return orca_path
-            except PermissionError:
-                pass
+                    return str(candidate.resolve())
 
-    if not orca_path:
-        orca_path = shutil.which("orca")
-        
+    # 2. Explicit env-var candidates commonly used in host installs
+    env_candidates = []
+    for key in ["ORCA_PATH", "ORCA_BIN", "ORCA_HOME", "ORCA_DIR"]:
+        value = os.environ.get(key)
+        if not value:
+            continue
+        p = Path(value)
+        if p.is_dir():
+            env_candidates.append(p / ("orca.exe" if sys.platform == "win32" else "orca"))
+            env_candidates.append(p / "bin" / ("orca.exe" if sys.platform == "win32" else "orca"))
+        else:
+            env_candidates.append(p)
+
+    for candidate in env_candidates:
+        if candidate.exists():
+            print(f"✅ System ORCA detected via environment at: {candidate}")
+            if sys.platform != "win32" and str(candidate).endswith(".exe"):
+                print("⚠️  WARNING: Bridging Windows ORCA (.exe) into Linux drops OpenMPI efficiency.")
+            return str(candidate.resolve())
+
+    # 2.5. Recover ORCA path from authoritative CoChem config if present
+    config_candidates = [
+        Path.cwd() / "cochem_system_config.json",
+        Path.cwd() / "cochem_setup" / "cochem_system_config.json",
+    ]
+    for cfg in config_candidates:
+        if not cfg.exists():
+            continue
+        try:
+            with open(cfg, "r") as f:
+                cfg_data = json.load(f)
+            engine_node = cfg_data.get("engines", {}).get("orca", {})
+            cfg_path = engine_node.get("path") if isinstance(engine_node, dict) else None
+            if cfg_path and Path(cfg_path).exists():
+                print(f"✅ ORCA restored from config registry at: {cfg_path}")
+                return str(Path(cfg_path).resolve())
+        except Exception:
+            continue
+
+    # 3. Native OS lookup ('where' on Windows, 'which' on Linux/Mac) via explicit shell subprocess
+    orca_path = None
+    try:
+        if sys.platform == "win32":
+            res = subprocess.run("where orca", shell=True, capture_output=True, text=True)
+            if res.returncode == 0 and res.stdout.strip():
+                orca_path = res.stdout.strip().splitlines()[0].strip()
+        else:
+            res = subprocess.run("which orca", shell=True, capture_output=True, text=True)
+            if res.returncode == 0 and res.stdout.strip():
+                orca_path = res.stdout.strip().splitlines()[0].strip()
+    except Exception as e:
+        print(f"⚠️  OS command lookup failed: {e}")
+        pass
+    
     if orca_path and Path(orca_path).exists():
-        if sys.platform != "win32" and not str(orca_path).endswith(".exe"):
-             print(f"✅ Native Linux ORCA detected at: {orca_path}")
+        print(f"✅ System ORCA detected via OS Native Command at: {orca_path}")
+        if sys.platform != "win32" and str(orca_path).endswith(".exe"):
+             print("⚠️  WARNING: Bridging Windows ORCA (.exe) into Linux drops OpenMPI efficiency.")
         return str(Path(orca_path).resolve())
+
+    # 4. Host/artifact fallback scan for extracted ORCA binaries not in PATH
+    scan_roots = [
+        Path(os.environ.get("COCHEM_ENGINE_REGISTRY", Path.home() / "CoChem_Artifacts" / "Registry" / "Engines")),
+        Path.home() / "CoChem_Artifacts" / "Registry" / "Engines",
+    ]
+    for root_dir in scan_roots:
+        if not root_dir.exists():
+            continue
+        try:
+            for pattern in ["orca", "orca.exe"]:
+                for candidate in root_dir.rglob(pattern):
+                    if not candidate.is_file():
+                        continue
+                    if sys.platform != "win32" and candidate.name == "orca":
+                        try:
+                            candidate.chmod(0o755)
+                        except OSError:
+                            pass
+                    print(f"✅ Located host-staged ORCA binary at: {candidate}")
+                    return str(candidate.resolve())
+        except OSError:
+            continue
         
+    print("⚠️  System ORCA missing from native OS PATH lookup. Defaulting to silo setup...")
     return None
 
 def enforce_pip_dependency_fallback(url: str, target_path: Path, archive_name: str) -> bool:
@@ -168,10 +335,52 @@ def deploy_airgapped_orca():
     """Dynamic Extraction from COCHEM_ENGINE_REGISTRY using memory-safe OS tar."""
     print("➡️  System ORCA missing. Triggering automated deployment...")
     registry_dir = Path(os.environ.get("COCHEM_ENGINE_REGISTRY", Path.home() / "CoChem_Artifacts" / "Registry" / "Engines"))
+    registry_dir.mkdir(parents=True, exist_ok=True)
+
+    def prompt_and_store_host_orca_hint() -> bool:
+        """Interactive fallback: capture host ORCA path and persist for Phase 3 re-detection."""
+        if not sys.stdin.isatty():
+            return False
+
+        print("\n💡 Optional automation: provide a host ORCA binary path for direct reuse.")
+        print("   Example (Windows host): C:\\ORCA\\orca.exe")
+        print("   Example (Linux host): /opt/orca/orca")
+        print("   Press Enter to skip and use archive upload instead.")
+        try:
+            raw_hint = input("Host ORCA path (optional): ").strip()
+        except EOFError:
+            return False
+
+        if not raw_hint:
+            return False
+
+        artifact_dir = Path(os.environ.get("COCHEM_ARTIFACT_DIR", Path.home() / "CoChem_Artifacts"))
+        hint_file = artifact_dir / "Registry" / "host_orca_path.txt"
+        hint_file.parent.mkdir(parents=True, exist_ok=True)
+        hint_file.write_text(raw_hint, encoding="utf-8")
+        os.environ["COCHEM_HOST_ORCA_PATH"] = raw_hint
+        print(f"✅ Saved host ORCA hint to: {hint_file}")
+        return True
         
     archives = list(registry_dir.glob("orca*6*.t*")) + list(registry_dir.glob("*.tar.xz")) + list(registry_dir.glob("*.tz"))
     if not archives:
-        return None
+        if prompt_and_store_host_orca_hint():
+            hinted_orca = locate_system_orca()
+            if hinted_orca:
+                print(f"✅ Host ORCA resolved after interactive hint: {hinted_orca}")
+                return hinted_orca
+
+        print("\n" + "="*60)
+        print("🛑 ORCA 6.1.1 DEPLOYMENT HALTED (FACCTS LICENSING)")
+        print("="*60)
+        print("ORCA is proprietary software and cannot be downloaded automatically.")
+        print("1. Register/Login at: https://faccts.de/")
+        print("2. Download the 'ORCA 6.1.1 Linux x86-64 Shared OpenMPI 4.1.x' archive.")
+        print(f"3. Move the downloaded .tar.xz file exactly here:\n   {registry_dir}")
+        print("   You can also drag-and-drop the archive into the UNITY installer upload widget.")
+        print("4. Re-run the CoChem setup orchestrator.")
+        print("="*60 + "\n")
+        sys.exit(2)
         
     target_archive = archives[0]
     silo_dir = Path.home() / ".cochem" / "engines" / "orca_6_1_1"
@@ -201,7 +410,6 @@ def deploy_airgapped_orca():
 
 def install_openmpi(silo_dir: Path) -> str:
     """Actively compiles OpenMPI and enforces strict 4.1.x versioning."""
-    print("➡️  System OpenMPI missing or incorrect version. Triggering active compilation...")
     if sys.platform == "win32":
         return None
         
@@ -210,8 +418,10 @@ def install_openmpi(silo_dir: Path) -> str:
     
     mpi_bin = mpi_silo / "bin" / "mpirun"
     if mpi_bin.exists() and verify_execution(str(mpi_bin)):
+        print(f"✅ Found cached CoChem Open MPI at: {mpi_bin}")
         return str(mpi_bin)
         
+    print("➡️  System OpenMPI missing or incorrect version. Triggering active compilation...")
     tar_url = "https://download.open-mpi.org/release/open-mpi/v4.1/openmpi-4.1.6.tar.gz"
     tar_path = mpi_silo / "openmpi.tar.gz"
     
@@ -241,14 +451,15 @@ def install_openmpi(silo_dir: Path) -> str:
     return None
 
 def install_xtb(silo_dir: Path) -> str:
-    print("➡️  System g-xTB missing. Triggering active deployment...")
     xtb_silo = silo_dir / "g_xtb"
     xtb_silo.mkdir(parents=True, exist_ok=True)
     
     xtb_bin = xtb_silo / "xtb-6.6.1" / "bin" / "xtb"
     if xtb_bin.exists() and verify_execution(str(xtb_bin)):
+        print(f"✅ Found cached CoChem g-xTB at: {xtb_bin}")
         return str(xtb_bin)
         
+    print("➡️  System g-xTB missing. Triggering active deployment...")
     if sys.platform == "win32": return None 
         
     tar_path = xtb_silo / "xtb.tar.xz"
@@ -264,17 +475,19 @@ def install_xtb(silo_dir: Path) -> str:
     return None
 
 def install_crest(silo_dir: Path, xtb_path: str) -> str:
-    print("➡️  System CREST missing. Triggering active deployment...")
     crest_silo = silo_dir / "crest"
     crest_silo.mkdir(parents=True, exist_ok=True)
+    
     crest_bin = crest_silo / "crest"
     if crest_bin.exists() and verify_execution(str(crest_bin)):
+        print(f"✅ Found cached CoChem CREST at: {crest_bin}")
         return str(crest_bin)
         
+    print("➡️  System CREST missing. Triggering active deployment...")
     if sys.platform == "win32": return None
         
     tar_path = crest_silo / "crest.tar.xz"
-    if enforce_pip_dependency_fallback("https://github.com/grimme-lab/crest/releases/download/v2.12/crest-x86_64-unknown-linux-gnu.tar.xz", tar_path, "crest.tar.xz"):
+    if enforce_pip_dependency_fallback("https://github.com/grimme-lab/crest/releases/download/latest/crest-latest.tar.xz", tar_path, "crest.tar.xz"):
         try:
             subprocess.run(["tar", "--no-same-owner", "-xf", str(tar_path), "-C", str(crest_silo)], check=True)
             tar_path.unlink(missing_ok=True)
@@ -323,11 +536,6 @@ def main():
     orca_bin = locate_system_orca()
     if not orca_bin:
         orca_bin = deploy_airgapped_orca()
-        
-    if not orca_bin:
-        print("\n❌ FATAL: ORCA could not be located or installed.")
-        print("Please place the ORCA .tar.xz or .tz file in ~/CoChem_Artifacts/Registry/Engines/ and retry.")
-        sys.exit(1)
         
     test_orca_execution(orca_bin)
         

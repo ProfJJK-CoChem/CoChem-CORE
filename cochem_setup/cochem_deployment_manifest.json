@@ -1,0 +1,12 @@
+{
+    "version": "2026.2",
+    "git_provenance_hash": "0716f34713af44cf",
+    "deployment_target": "Codespaces",
+    "modules": [
+        "CoChem-CORE"
+    ],
+    "selected_modules": {
+        "CoChem-CORE": "https://github.com/CoChem/CoChem-CORE"
+    },
+    "host_orca_path": "/opt/orca/orca"
+}

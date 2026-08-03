@@ -3,6 +3,7 @@ import os
 import sys
 import subprocess
 import shutil
+import json
 from pathlib import Path
 
 def inject_local_paths(env: dict) -> dict:
@@ -45,19 +46,40 @@ def set_artifact_dir(repo_root: Path, env: dict) -> dict:
     env["COCHEM_ENGINE_REGISTRY"] = str(engine_staging_dir)
     print(f"🔒 Air-Gap Enforced: All logs and state files routed to {artifact_dir}")
     print(f"📦 Engine Staging Directory locked at: {engine_staging_dir}")
+    print("📍 Place ORCA archives in this exact folder before rerunning setup if prompted.")
 
-    # Air-Gap Enforcement: Auto-migrate ORCA archives accidentally dropped in the repo root
-    for ext in ["*.tar.xz", "*.tz", "*.tar.gz"]:
-        for file in repo_root.glob(f"orca_6_1_1{ext}"):
-            target_path = engine_staging_dir / file.name
-            print(f"\n⚠️  WARNING: Large ORCA archive detected inside Git repository!")
-            print(f"🔄 Moving {file.name} to Air-Gap Staging to prevent Git tracking lockups...")
-            shutil.move(str(file), str(target_path))
-            print(f"✅ Securely moved to: {target_path}")
+    # Air-Gap Enforcement: Auto-migrate ORCA archives accidentally dropped in common user locations
+    source_dirs = [repo_root, Path.home(), Path.home() / "Downloads"]
+    for source_dir in source_dirs:
+        if not source_dir.exists():
+            continue
+        for pattern in ["orca*.tar.xz", "orca*.tz", "orca*.tar.gz", "ORCA*.tar.xz", "ORCA*.tz", "ORCA*.tar.gz"]:
+            for file in source_dir.glob(pattern):
+                if not file.is_file():
+                    continue
+                target_path = engine_staging_dir / file.name
+                if target_path.exists():
+                    continue
+                print(f"\n⚠️  WARNING: ORCA archive detected outside Air-Gap staging: {file}")
+                print(f"🔄 Moving {file.name} to Air-Gap Staging to prevent path drift...")
+                shutil.move(str(file), str(target_path))
+                print(f"✅ Securely moved to: {target_path}")
 
     return env
 
-def run_setup_phases(repo_root: Path, env: dict):
+def phase4_torq_silo_active(repo_root: Path) -> bool:
+    """Reads Phase 4 state to determine whether cochem_torq_silo exists for Phase 5 execution routing."""
+    p4_state = repo_root / "cochem_setup" / "cochem_state_p4.json"
+    if not p4_state.exists():
+        return False
+    try:
+        with open(p4_state, "r") as f:
+            data = json.load(f)
+        return bool(data.get("torq_silo_active", False))
+    except Exception:
+        return False
+
+def run_setup_phases(repo_root: Path, env: dict) -> bool:
     """Executes the core 5 phases sequentially using pure Python and Conda silos."""
     setup_dir = repo_root / "cochem_setup"
     
@@ -85,45 +107,35 @@ def run_setup_phases(repo_root: Path, env: dict):
                     if local_conda.exists():
                         conda_path = str(local_conda)
                 
-                if conda_path:
+                if conda_path and phase4_torq_silo_active(repo_root):
                     print(f"🔄 Routing Phase 5 through {conda_path} inside cochem_torq_silo...")
                     subprocess.run([conda_path, "run", "-n", "cochem_torq_silo", "python", str(phase)], env=env, check=True)
                 else:
+                    print("⚠️  TORQ silo unavailable; running Phase 5 with orchestrator Python.")
                     subprocess.run([sys.executable, str(phase)], env=env, check=True)
             else:
                 subprocess.run([sys.executable, str(phase)], env=env, check=True)
         except subprocess.CalledProcessError as e:
+            if phase.name == "cochem_setup_phase_3.py" and e.returncode == 2:
+                print("\n⚠️  Setup paused: ORCA archive is required before Phase 3 can complete.")
+                print("📤 Opening CoChem-UNITY so you can upload/drag-drop the ORCA archive now.")
+                return False
             print(f"\n❌ Phase Execution Failed (Exit code: {e.returncode}).")
             print("Please check the logs in ~/CoChem_Artifacts/Logs/ for details.")
             sys.exit(e.returncode)
+    return True
 
 def launch_unity_dashboard(repo_root: Path, env: dict):
     """Hands off execution to the GUI only after silos are built."""
-    gui_script = repo_root / "interfaces" / "cochem_unity_installer_dashboard.py"
-    if not gui_script.exists():
-        print(f"\n⚠️  WARNING: GUI Dashboard not found at {gui_script}.")
+    start_notebook = repo_root / "Start_Here.ipynb"
+    if not start_notebook.exists():
+        print(f"\n⚠️  WARNING: Start notebook not found at {start_notebook}.")
         print("CoChem Core is installed, but the UI is missing. Proceeding via CLI only.")
         return
 
-    print("\n🌐 Bootstrapping complete. Launching CoChem-UNITY Dashboard...")
-    
-    # Check standard paths and the custom local bootstrap path
-    conda_path = shutil.which("mamba") or shutil.which("conda")
-    if not conda_path:
-        local_conda = Path.home() / ".local" / "miniconda" / "bin" / "conda"
-        if local_conda.exists():
-            conda_path = str(local_conda)
-
-    if conda_path:
-        try:
-            # Execute the GUI inside the properly configured conda environment
-            print(f"🔄 Routing GUI through {conda_path} inside cochem_torq_silo...")
-            subprocess.run([conda_path, "run", "-n", "cochem_torq_silo", "python", str(gui_script)], env=env, check=True)
-        except subprocess.CalledProcessError as e:
-             print(f"\n❌ GUI Launch failed via Conda: {e}")
-    else:
-         print("\n⚠️  Conda not found in path. Attempting to launch GUI with system python...")
-         subprocess.run([sys.executable, str(gui_script)], env=env)
+    print("\n✅ Bootstrapping complete. Using local Jupyter notebook GUI path.")
+    print(f"📓 Open this notebook in VS Code: {start_notebook}")
+    print("▶️ Run cells in order to execute setup and render the deployment widget dashboard.")
 
 def main():
     print("=======================================================")
@@ -148,10 +160,13 @@ def main():
     env = set_artifact_dir(repo_root, env)
     
     # 1. Run the headless setup scripts to generate the Conda silos
-    run_setup_phases(repo_root, env)
-    
+    setup_completed = run_setup_phases(repo_root, env)
+
     # 2. Hand off to the UI
     launch_unity_dashboard(repo_root, env)
+
+    if not setup_completed:
+        print("\n⚠️  Setup is waiting on ORCA archive intake. Resume setup after upload.")
 
 if __name__ == "__main__":
     main()

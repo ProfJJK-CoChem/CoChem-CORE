@@ -117,7 +117,15 @@ def get_selected_modules() -> list:
         try:
             with open(manifest_path, "r") as f:
                 data = json.load(f)
-                return data.get("modules", [])
+                modules = data.get("modules")
+                if isinstance(modules, list) and modules:
+                    return modules
+                selected = data.get("selected_modules")
+                if isinstance(selected, dict):
+                    return list(selected.keys())
+                if isinstance(selected, list):
+                    return selected
+                return []
         except json.JSONDecodeError:
             return ["ALL"]
     return ["ALL"]
@@ -141,13 +149,67 @@ def run_conda_cmd(cmd_list: list, log: logging.Logger) -> bool:
         log.error(f"Conda Error: {e.stderr}")
         return False
 
+def accept_conda_tos(conda_path: str, log: logging.Logger) -> None:
+    """Pre-accepts known non-interactive ToS gates used by Miniconda defaults channels."""
+    channels = [
+        "https://repo.anaconda.com/pkgs/main",
+        "https://repo.anaconda.com/pkgs/r",
+    ]
+    for channel in channels:
+        cmd = [
+            conda_path,
+            "tos",
+            "accept",
+            "--override-channels",
+            "--channel",
+            channel,
+        ]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode == 0:
+                log.info(f"Accepted Conda ToS channel: {channel}")
+            else:
+                log.warning(f"Conda ToS accept returned non-zero for {channel}: {result.stderr.strip()}")
+        except Exception as e:
+            log.warning(f"Conda ToS pre-accept failed for {channel}: {e}")
+
 def enforce_pip_upgrades(conda_path: str, env_name: str, log: logging.Logger) -> bool:
     """Aggressively upgrades pip inside the silo before installing MACE."""
     print_status(f"Enforcing pip/wheel upgrade in silo '{env_name}'...", "info")
     return run_conda_cmd(
-        [conda_path, "run", "-n", env_name, "python", "-m", "pip", "install", "--upgrade", "pip", "wheel", "setuptools"],
+        [conda_path, "run", "-n", env_name, "python", "-m", "pip", "install", "--no-user", "--upgrade", "pip", "wheel", "setuptools"],
         log
     )
+
+def has_cuda_toolkit() -> bool:
+    """Detects whether a CUDA compiler toolchain is available for GPU4PySCF builds."""
+    nvcc = shutil.which("nvcc")
+    if nvcc:
+        return True
+    cuda_home = os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH")
+    if cuda_home:
+        return Path(cuda_home).joinpath("bin", "nvcc").exists()
+    return False
+
+def install_cuda_toolkit(conda_path: str, env_name: str, log: logging.Logger) -> bool:
+    """Installs a CUDA nvcc toolchain inside the silo so GPU4PySCF can build from source."""
+    if run_conda_cmd([conda_path, "run", "-n", env_name, "which", "nvcc"], log):
+        log.info(f"CUDA nvcc already present inside {env_name}.")
+        return True
+
+    print_status(f"Provisioning CUDA nvcc toolchain in silo '{env_name}'...", "info")
+    cuda_cmd = [
+        conda_path,
+        "install",
+        "-y",
+        "--override-channels",
+        "-c",
+        "nvidia",
+        "cuda-nvcc",
+        "-n",
+        env_name,
+    ]
+    return run_conda_cmd(cuda_cmd, log)
 
 def build_torq_silo(conda_path: str, log: logging.Logger) -> bool:
     """Builds the primary Discovery/Geometry engine (TORQ/TOPOS)."""
@@ -155,10 +217,10 @@ def build_torq_silo(conda_path: str, log: logging.Logger) -> bool:
     print_status(f"Building Discovery Silo '{env_name}' (Python 3.11, MACE, NetworkX)...", "info")
     
     # 1. Create Base Env with Upgrade Fallback
-    create_cmd = [conda_path, "create", "-y", "-c", "conda-forge", "-n", env_name, "python=3.11", "numpy", "scipy", "networkx", "matplotlib"]
+    create_cmd = [conda_path, "create", "-y", "--override-channels", "-c", "conda-forge", "-n", env_name, "python=3.11", "numpy", "scipy", "networkx", "matplotlib"]
     if not run_conda_cmd(create_cmd, log):
         log.warning(f"Conda create failed. Attempting forced upgrade on existing {env_name}...")
-        upgrade_cmd = [conda_path, "install", "-y", "-c", "conda-forge", "-n", env_name, "python=3.11", "numpy", "scipy", "networkx", "matplotlib"]
+        upgrade_cmd = [conda_path, "install", "-y", "--override-channels", "-c", "conda-forge", "-n", env_name, "python=3.11", "numpy", "scipy", "networkx", "matplotlib"]
         if not run_conda_cmd(upgrade_cmd, log):
             print_status("Failed to create or upgrade base TORQ Conda environment.", "fail")
             return False
@@ -168,7 +230,25 @@ def build_torq_silo(conda_path: str, log: logging.Logger) -> bool:
     
     # 3. Pip Install PyTorch, MACE, and dependencies
     print_status("Injecting PyTorch and MACE-OFF23...", "info")
-    pip_cmd = [conda_path, "run", "-n", env_name, "pip", "install", "torch", "mace-torch", "pydantic", "h5py", "rdkit"]
+    pip_cmd = [
+        conda_path,
+        "run",
+        "-n",
+        env_name,
+        "python",
+        "-m",
+        "pip",
+        "install",
+        "--no-user",
+        "torch",
+        "mace-torch",
+        "pydantic",
+        "h5py",
+        "rdkit",
+        "ipywidgets==8.1.5",
+        "ipykernel",
+        "jupyterlab_widgets==3.0.13",
+    ]
     
     if run_conda_cmd(pip_cmd, log):
         print_status("TORQ Silo built successfully.", "success")
@@ -182,25 +262,33 @@ def build_gpu_silo(conda_path: str, log: logging.Logger) -> bool:
     env_name = "cochem_gpu_silo"
     print_status(f"Building Ab Initio GPU Silo '{env_name}' (GPU4PySCF)...", "info")
     
-    create_cmd = [conda_path, "create", "-y", "-c", "conda-forge", "-n", env_name, "python=3.11", "numpy", "scipy", "h5py"]
+    create_cmd = [conda_path, "create", "-y", "--override-channels", "-c", "conda-forge", "-n", env_name, "python=3.11", "numpy", "scipy", "h5py"]
     if not run_conda_cmd(create_cmd, log):
         log.warning(f"Conda create failed. Attempting forced upgrade on existing {env_name}...")
-        upgrade_cmd = [conda_path, "install", "-y", "-c", "conda-forge", "-n", env_name, "python=3.11", "numpy", "scipy", "h5py"]
+        upgrade_cmd = [conda_path, "install", "-y", "--override-channels", "-c", "conda-forge", "-n", env_name, "python=3.11", "numpy", "scipy", "h5py"]
         if not run_conda_cmd(upgrade_cmd, log):
             print_status("Failed to create or upgrade Ab Initio GPU Silo.", "fail")
             return False
          
     enforce_pip_upgrades(conda_path, env_name, log)
+
+    if not install_cuda_toolkit(conda_path, env_name, log):
+        print_status("Failed to provision CUDA nvcc inside GPU silo.", "fail")
+        return False
     
     print_status("Injecting PySCF and pre-compiled GPU4PySCF wheels...", "info")
-    pip_cmd = [conda_path, "run", "-n", env_name, "pip", "install", "pyscf", "gpu4pyscf"]
+    pip_cmd = [conda_path, "run", "-n", env_name, "python", "-m", "pip", "install", "--no-user", "pyscf"]
     
     if run_conda_cmd(pip_cmd, log):
-        print_status("GPU Silo built successfully.", "success")
-        return True
-    else:
-        print_status("Failed to inject PySCF into GPU silo.", "warning")
+        gpu_cmd = [conda_path, "run", "-n", env_name, "python", "-m", "pip", "install", "--no-user", "gpu4pyscf-cuda12x"]
+        if run_conda_cmd(gpu_cmd, log):
+            print_status("GPU Silo built successfully.", "success")
+            return True
+        print_status("GPU4PySCF injection failed after CUDA toolkit provisioning.", "fail")
         return False
+
+    print_status("Failed to inject PySCF into GPU silo.", "warning")
+    return False
 
 # ---------------------------------------------------------
 # MAIN EXECUTION
@@ -214,6 +302,7 @@ def main():
     try:
         conda_path = find_conda(log)
         print_status(f"Package Manager Detected: {conda_path}", "success")
+        accept_conda_tos(conda_path, log)
     except RuntimeError as e:
         print_status(str(e), "fail")
         log.error(str(e))
@@ -228,7 +317,7 @@ def main():
         "gpu_silo_active": False
     }
     
-    if "ALL" in selected_modules or any(mod in selected_modules for mod in ["CoChem-TOPOS", "CoChem-TORQ", "CoChem-SCAN", "CoChem-SpycFit", "CoChem-LUMOS"]):
+    if "ALL" in selected_modules or "CoChem-CORE" in selected_modules or any(mod in selected_modules for mod in ["CoChem-TOPOS", "CoChem-TORQ", "CoChem-SCAN", "CoChem-SpycFit", "CoChem-LUMOS"]):
         if build_torq_silo(conda_path, log):
             state_record["torq_silo_active"] = True
     else:

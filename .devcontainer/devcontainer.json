@@ -5,7 +5,8 @@
         "dockerfile": "../docker.dockerfile"
     },
     "runArgs": [
-        "--gpus", "all",
+        "--gpus",
+        "all",
         "--shm-size=8gb",
         "--cap-add=SYS_PTRACE"
     ],
@@ -24,11 +25,22 @@
         }
     },
     "forwardPorts": [
-        8000, 
-        8888, 
+        8866,
+        8000,
+        8888,
         5173
     ],
+    "mounts": [
+        "source=${localEnv:SystemDrive}/,target=/host_os_root,type=bind,readonly,consistency=cached"
+    ],
+    "remoteEnv": {
+        "COCHEM_HOST_ORCA_HOME": "/host_os_root"
+    },
     "portsAttributes": {
+        "8866": {
+            "label": "CoChem-UNITY Notebook Dashboard",
+            "onAutoForward": "notify"
+        },
         "8000": {
             "label": "CoChem-UNITY FastAPI Backend",
             "onAutoForward": "notify"

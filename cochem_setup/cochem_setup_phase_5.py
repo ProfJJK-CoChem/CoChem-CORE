@@ -10,6 +10,7 @@ import os
 import sys
 import json
 import logging
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
@@ -24,8 +25,22 @@ try:
     )
     PYDANTIC_ACTIVE = True
 except ImportError as e:
-    PYDANTIC_ACTIVE = False
-    print(f"⚠️ Pydantic Registry Schemas not found in core_engine. Using strict dictionary fallback.\n({e})")
+    # Keep schema validation strict even when Phase 5 runs outside TORQ silo.
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--user", "pydantic"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        from cochem_core_registry_schema import (
+            CoChemConfig, HardwareConfig, EnginePaths, EngineInfo, SiloConfig
+        )
+        PYDANTIC_ACTIVE = True
+        print("✅ Pydantic bootstrap completed for Phase 5 schema validation.")
+    except Exception:
+        PYDANTIC_ACTIVE = False
+        print(f"⚠️ Pydantic Registry Schemas not found in core_engine. Using strict dictionary fallback.\n({e})")
 
 # ---------------------------------------------------------
 # UI & LOGGING PROTOCOLS
@@ -79,6 +94,34 @@ def load_ephemeral_state(setup_dir: Path, phase_num: int) -> dict:
     with open(state_file, "r") as f:
         return json.load(f)
 
+def normalize_engine_info(raw_engine: dict, default_version: str = None) -> dict:
+    """Transforms Phase 3 raw engine records into Golden Schema EngineInfo layout."""
+    if not isinstance(raw_engine, dict):
+        return {
+            "status": "missing",
+            "path": None,
+            "version": default_version,
+            "hash": None,
+        }
+
+    path = raw_engine.get("path")
+    hash_value = raw_engine.get("hash") or raw_engine.get("sha256")
+    version = raw_engine.get("version", default_version)
+    if path and path != "None":
+        return {
+            "status": "found",
+            "path": path,
+            "version": version,
+            "hash": hash_value,
+        }
+
+    return {
+        "status": "missing",
+        "path": None,
+        "version": version,
+        "hash": hash_value,
+    }
+
 def compile_master_registry(setup_dir: Path, log: logging.Logger) -> bool:
     """Aggregates all phase states and validates them against the Golden Schema."""
     print_status("Aggregating ephemeral states from Phases 1-4...", "info")
@@ -88,6 +131,13 @@ def compile_master_registry(setup_dir: Path, log: logging.Logger) -> bool:
         p3 = load_ephemeral_state(setup_dir, 3)
         p4 = load_ephemeral_state(setup_dir, 4)
         
+        p3_engines = p3.get("engines", {})
+        normalized_engines = {
+            "orca": normalize_engine_info(p3_engines.get("orca", {}), "6.1.1"),
+            "mpirun": normalize_engine_info(p3_engines.get("mpirun", p3_engines.get("openmpi", {}))),
+            "xtb": normalize_engine_info(p3_engines.get("xtb", p3_engines.get("g_xtb", {}))),
+        }
+
         raw_config = {
             "schema_version": "1.0.0",
             "last_updated": datetime.now().isoformat(),
@@ -101,7 +151,7 @@ def compile_master_registry(setup_dir: Path, log: logging.Logger) -> bool:
                 "subnormal_precision_trap": p2.get("subnormal_precision_trap", False),
                 "os_target": p2.get("os_target", "linux_x86_64")
             },
-            "engines": p3.get("engines", {}),
+            "engines": normalized_engines,
             "silos": {
                 "torq_silo_active": p4.get("torq_silo_active", False),
                 "gpu_silo_active": p4.get("gpu_silo_active", False)

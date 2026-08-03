@@ -1,6 +1,6 @@
 {
     "schema_version": "1.0.0",
-    "last_updated": "2026-07-29T15:11:00.677161",
+    "last_updated": "2026-08-03T04:11:59.370422",
     "hardware": {
         "physical_cpu_cores": 6,
         "logical_cpu_cores": 12,
@@ -13,23 +13,34 @@
     },
     "engines": {
         "orca": {
-            "status": "missing",
-            "path": "None",
-            "version": "6.1.1"
+            "status": "found",
+            "path": "/host_os_root/ORCA_6.1.1/orca.exe",
+            "version": "6.1.1",
+            "hash": "8d6b51bf4093c967dbed997cc651f0212b8f94313ee77ea56f548f000672c42f"
         },
         "mpirun": {
-            "status": "verified",
+            "status": "found",
             "path": "/usr/bin/mpirun",
-            "version": "4.1.6"
+            "version": null,
+            "hash": "aad9e80dbde91273d09490a5b6de513b02ef3d4bc8d709fedf3e822ee9e7bda8"
         },
         "xtb": {
-            "status": "verified",
-            "path": "/home/vscode/CoChem_Artifacts/Registry/Engines/xtb_bin/xtb-dist/share/xtb",
-            "version": "latest"
+            "status": "found",
+            "path": "/home/vscode/.cochem/engines/g_xtb/xtb-6.6.1/bin/xtb",
+            "version": null,
+            "hash": "3a4fb07254a1097076d6eb4526330621505f5677bf4fcb6165e835a8d940c5f4"
         }
     },
     "silos": {
-        "torq_silo_active": false,
+        "torq_silo_active": true,
         "gpu_silo_active": false
-    }
+    },
+    "adaptive_routing": null,
+    "hpc": {
+        "scheduler": "local",
+        "default_partition": "compute",
+        "max_walltime_hours": 24
+    },
+    "alignment_engine_ready": false,
+    "active_jobs": {}
 }

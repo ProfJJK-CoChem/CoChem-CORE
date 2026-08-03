@@ -1,0 +1,16 @@
+{
+    "version": "2026.2",
+    "git_provenance_hash": "f618611c662999bf",
+    "deployment_target": "Local DevContainer",
+    "modules": [
+        "CoChem-CORE",
+        "CoChem-TOPOS",
+        "CoChem-TORQ"
+    ],
+    "selected_modules": {
+        "CoChem-CORE": "https://github.com/CoChem/CoChem-CORE",
+        "CoChem-TOPOS": "https://github.com/CoChem/CoChem-TOPOS",
+        "CoChem-TORQ": "https://github.com/CoChem/CoChem-TORQ"
+    },
+    "host_orca_path": ""
+}

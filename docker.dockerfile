@@ -1,6 +1,9 @@
 # cochem_canvas_target: Dockerfile
-# Native NVIDIA CUDA Runtime ensures PyTorch/MACE-OFF23 hardware acceleration
-FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04
+# Native NVIDIA CUDA Development runtime ensures PyTorch/MACE-OFF23 hardware acceleration
+FROM nvidia/cuda:12.2.0-devel-ubuntu22.04
+
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
 # Prevent interactive prompts from hanging the build
 ENV DEBIAN_FRONTEND=noninteractive
