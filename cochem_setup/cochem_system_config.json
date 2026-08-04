@@ -1,32 +1,32 @@
 {
     "schema_version": "1.0.0",
-    "last_updated": "2026-08-03T04:11:59.370422",
+    "last_updated": "2026-08-03T18:17:36.510491",
     "hardware": {
-        "physical_cpu_cores": 6,
-        "logical_cpu_cores": 12,
-        "ram_gb": 38.25,
+        "physical_cpu_cores": 16,
+        "logical_cpu_cores": 24,
+        "ram_gb": 62.55,
         "avx512_support": false,
-        "gpu_profile": "NVIDIA GeForce RTX 3090",
-        "vram_gb": 24.0,
+        "gpu_profile": "Generic VGA / Integrated",
+        "vram_gb": 0.0,
         "subnormal_precision_trap": false,
         "os_target": "linux_x86_64"
     },
     "engines": {
         "orca": {
             "status": "found",
-            "path": "/host_os_root/ORCA_6.1.1/orca.exe",
+            "path": "/home/joshua/.cochem/engines/orca_6_1_1/orca_6_1_1_linux_x86-64_shared_openmpi418_avx2/orca",
             "version": "6.1.1",
-            "hash": "8d6b51bf4093c967dbed997cc651f0212b8f94313ee77ea56f548f000672c42f"
+            "hash": "d65fe8fe3136e0008de9e5784ab8d853b0ef51a02635d7d6fb0f6a1c95d648d1"
         },
         "mpirun": {
             "status": "found",
-            "path": "/usr/bin/mpirun",
+            "path": "/home/joshua/.cochem/engines/openmpi_4_1_6/bin/mpirun",
             "version": null,
-            "hash": "aad9e80dbde91273d09490a5b6de513b02ef3d4bc8d709fedf3e822ee9e7bda8"
+            "hash": "dd7fe8f0aa133a5a853ed08c62ddde2f588f612f70355db98674b7f4479296a9"
         },
         "xtb": {
             "status": "found",
-            "path": "/home/vscode/.cochem/engines/g_xtb/xtb-6.6.1/bin/xtb",
+            "path": "/home/joshua/.cochem/engines/g_xtb/xtb-6.6.1/bin/xtb",
             "version": null,
             "hash": "3a4fb07254a1097076d6eb4526330621505f5677bf4fcb6165e835a8d940c5f4"
         }

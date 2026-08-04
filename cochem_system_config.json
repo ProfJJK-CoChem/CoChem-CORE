@@ -1,6 +1,6 @@
 {
     "schema_version": "1.0.0",
-    "last_updated": "2026-07-28T22:17:26.271140",
+    "last_updated": "2026-08-03T19:54:13.439867",
     "hardware": {
         "physical_cpu_cores": 16,
         "logical_cpu_cores": 24,
@@ -32,8 +32,8 @@
         }
     },
     "silos": {
-        "torq_silo_active": false,
-        "gpu_silo_active": false
+        "torq_silo_active": true,
+        "gpu_silo_active": true
     },
     "adaptive_routing": {
         "max_concurrent_mace_threads": 4,

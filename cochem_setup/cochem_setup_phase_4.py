@@ -174,7 +174,7 @@ def accept_conda_tos(conda_path: str, log: logging.Logger) -> None:
             log.warning(f"Conda ToS pre-accept failed for {channel}: {e}")
 
 def enforce_pip_upgrades(conda_path: str, env_name: str, log: logging.Logger) -> bool:
-    """Aggressively upgrades pip inside the silo before installing MACE."""
+    """Aggressively upgrades pip inside the silo before installing packages."""
     print_status(f"Enforcing pip/wheel upgrade in silo '{env_name}'...", "info")
     return run_conda_cmd(
         [conda_path, "run", "-n", env_name, "python", "-m", "pip", "install", "--no-user", "--upgrade", "pip", "wheel", "setuptools"],
@@ -211,18 +211,62 @@ def install_cuda_toolkit(conda_path: str, env_name: str, log: logging.Logger) ->
     ]
     return run_conda_cmd(cuda_cmd, log)
 
-def build_torq_silo(conda_path: str, log: logging.Logger) -> bool:
-    """Builds the primary Discovery/Geometry engine (TORQ/TOPOS)."""
-    env_name = "cochem_torq_silo"
-    print_status(f"Building Discovery Silo '{env_name}' (Python 3.11, MACE, NetworkX)...", "info")
+# ---------------------------------------------------------
+# STRICT DECOUPLED MODULE SILOS
+# ---------------------------------------------------------
+
+def build_topos_silo(conda_path: str, log: logging.Logger) -> bool:
+    """Builds the TOPOS engine (RDKit, NetworkX, Graphs) and binds it to Jupyter."""
+    env_name = "cochem_topos_silo"
+    print_status(f"Building TOPOS Silo '{env_name}' (Python 3.11, RDKit, NetworkX)...", "info")
     
     # 1. Create Base Env with Upgrade Fallback
-    create_cmd = [conda_path, "create", "-y", "--override-channels", "-c", "conda-forge", "-n", env_name, "python=3.11", "numpy", "scipy", "networkx", "matplotlib"]
+    create_cmd = [conda_path, "create", "-y", "--override-channels", "-c", "conda-forge", "-n", env_name, "python=3.11", "numpy", "scipy", "networkx", "rdkit"]
     if not run_conda_cmd(create_cmd, log):
         log.warning(f"Conda create failed. Attempting forced upgrade on existing {env_name}...")
-        upgrade_cmd = [conda_path, "install", "-y", "--override-channels", "-c", "conda-forge", "-n", env_name, "python=3.11", "numpy", "scipy", "networkx", "matplotlib"]
+        upgrade_cmd = [conda_path, "install", "-y", "--override-channels", "-c", "conda-forge", "-n", env_name, "python=3.11", "numpy", "scipy", "networkx", "rdkit"]
         if not run_conda_cmd(upgrade_cmd, log):
-            print_status("Failed to create or upgrade base TORQ Conda environment.", "fail")
+            print_status("Failed to create or upgrade TOPOS Conda environment.", "fail")
+            return False
+            
+    # 2. Upgrade Pip
+    enforce_pip_upgrades(conda_path, env_name, log)
+    
+    # 3. Pip Install Jupyter dependencies
+    print_status("Injecting Jupyter dependencies for TOPOS...", "info")
+    pip_cmd = [
+        conda_path, "run", "-n", env_name, "python", "-m", "pip", "install", "--no-user",
+        "pydantic", "h5py", "ipywidgets==8.1.5", "ipykernel", "jupyterlab_widgets==3.0.13"
+    ]
+    
+    if run_conda_cmd(pip_cmd, log):
+        print_status("Registering TOPOS Silo into Jupyter environment kernels...", "info")
+        kernel_cmd = [
+            conda_path, "run", "-n", env_name, "python", "-m", "ipykernel", 
+            "install", "--user", "--name", env_name, "--display-name", "CoChem (TOPOS Silo)"
+        ]
+        if run_conda_cmd(kernel_cmd, log):
+            print_status("TOPOS Silo built and registered successfully.", "success")
+            return True
+        else:
+            print_status("Silo built, but Jupyter Kernel registration failed.", "warning")
+            return True
+    else:
+        print_status("Failed to inject PIP dependencies into TOPOS silo.", "fail")
+        return False
+
+def build_torq_silo(conda_path: str, log: logging.Logger) -> bool:
+    """Builds the primary Discovery/Geometry engine (PyTorch, MACE) and binds it to Jupyter."""
+    env_name = "cochem_torq_silo"
+    print_status(f"Building TORQ Silo '{env_name}' (Python 3.11, PyTorch, MACE)...", "info")
+    
+    # 1. Create Base Env with Upgrade Fallback
+    create_cmd = [conda_path, "create", "-y", "--override-channels", "-c", "conda-forge", "-n", env_name, "python=3.11", "numpy", "scipy"]
+    if not run_conda_cmd(create_cmd, log):
+        log.warning(f"Conda create failed. Attempting forced upgrade on existing {env_name}...")
+        upgrade_cmd = [conda_path, "install", "-y", "--override-channels", "-c", "conda-forge", "-n", env_name, "python=3.11", "numpy", "scipy"]
+        if not run_conda_cmd(upgrade_cmd, log):
+            print_status("Failed to create or upgrade TORQ Conda environment.", "fail")
             return False
         
     # 2. Upgrade Pip
@@ -231,28 +275,22 @@ def build_torq_silo(conda_path: str, log: logging.Logger) -> bool:
     # 3. Pip Install PyTorch, MACE, and dependencies
     print_status("Injecting PyTorch and MACE-OFF23...", "info")
     pip_cmd = [
-        conda_path,
-        "run",
-        "-n",
-        env_name,
-        "python",
-        "-m",
-        "pip",
-        "install",
-        "--no-user",
-        "torch",
-        "mace-torch",
-        "pydantic",
-        "h5py",
-        "rdkit",
-        "ipywidgets==8.1.5",
-        "ipykernel",
-        "jupyterlab_widgets==3.0.13",
+        conda_path, "run", "-n", env_name, "python", "-m", "pip", "install", "--no-user",
+        "torch", "mace-torch", "pydantic", "h5py", "ipywidgets==8.1.5", "ipykernel", "jupyterlab_widgets==3.0.13"
     ]
     
     if run_conda_cmd(pip_cmd, log):
-        print_status("TORQ Silo built successfully.", "success")
-        return True
+        print_status("Registering TORQ Silo into Jupyter environment kernels...", "info")
+        kernel_cmd = [
+            conda_path, "run", "-n", env_name, "python", "-m", "ipykernel", 
+            "install", "--user", "--name", env_name, "--display-name", "CoChem (TORQ Silo)"
+        ]
+        if run_conda_cmd(kernel_cmd, log):
+            print_status("TORQ Silo built and registered successfully.", "success")
+            return True
+        else:
+            print_status("Silo built, but Jupyter Kernel registration failed.", "warning")
+            return True
     else:
         print_status("Failed to inject PIP dependencies into TORQ silo.", "fail")
         return False
@@ -313,16 +351,26 @@ def main():
     # State record for Phase 5 Golden Gatekeeper aggregation
     state_record = {
         "phase": 4,
+        "topos_silo_active": False,
         "torq_silo_active": False,
         "gpu_silo_active": False
     }
+
+    # 1. TOPOS Isolation (RDKit, NetworkX, Graphs)
+    if "ALL" in selected_modules or "CoChem-TOPOS" in selected_modules or "CoChem-CORE" in selected_modules:
+        if build_topos_silo(conda_path, log):
+            state_record["topos_silo_active"] = True
+    else:
+        print_status("Skipping TOPOS Silo (Not required by deployment manifest)", "info")
     
-    if "ALL" in selected_modules or "CoChem-CORE" in selected_modules or any(mod in selected_modules for mod in ["CoChem-TOPOS", "CoChem-TORQ", "CoChem-SCAN", "CoChem-SpycFit", "CoChem-LUMOS"]):
+    # 2. TORQ Isolation (PyTorch, MACE)
+    if "ALL" in selected_modules or "CoChem-TORQ" in selected_modules or "CoChem-SCAN" in selected_modules or "CoChem-SpycFit" in selected_modules or "CoChem-LUMOS" in selected_modules:
         if build_torq_silo(conda_path, log):
             state_record["torq_silo_active"] = True
     else:
         print_status("Skipping TORQ Silo (Not required by deployment manifest)", "info")
         
+    # 3. GPU/Ab Initio (GPU4PySCF)
     if "ALL" in selected_modules or any(mod in selected_modules for mod in ["CoChem-TORQ", "CoChem-SCAN", "CoChem-SpycFit", "CoChem-LUMOS"]):
         if build_gpu_silo(conda_path, log):
             state_record["gpu_silo_active"] = True
@@ -342,6 +390,16 @@ def main():
         print_status(f"Fatal error writing Phase 4 state: {e}", "fail")
         log.error(f"Write error: {e}")
         raise RuntimeError(f"Phase 4 Registry Lock Failed: {e}")
+
+    # =========================================================================
+    # KERNEL SWITCH PROMPT
+    # =========================================================================
+    if state_record["topos_silo_active"] or state_record["torq_silo_active"]:
+        print("\n" + "="*70)
+        print(f"{Colors.WARNING}🛑 JUPYTER KERNEL SWITCH REQUIRED FOR DOWNSTREAM WORK 🛑{Colors.ENDC}")
+        print("Both TOPOS and TORQ environments have been explicitly partitioned.")
+        print("You must select the correct Kernel ('CoChem (TOPOS Silo)' or 'CoChem (TORQ Silo)') in the top right.")
+        print("="*70 + "\n")
 
 if __name__ == "__main__":
     main()
