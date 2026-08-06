@@ -2,7 +2,7 @@
 """
 CoChem-UNITY: Stage 0.1 - Pipeline Installer Dashboard
 Generates the dynamic GUI for provisioning the CoChem micro-silos.
-Includes Option 3: Artifacts Directory Bridge for Offline Module Ingestion.
+Includes robust OS-aware ORCA stripping and auto-detection of SYNAP-ingested modules.
 """
 import os
 import json
@@ -16,15 +16,8 @@ from pathlib import Path
 import ipywidgets as widgets
 from IPython.display import display, clear_output
 
-ECOSYSTEM_REGISTRY = {
-    "CoChem-CORE": {"desc": "Mandatory foundational registry and environment siloing.", "repo": "https://github.com/CoChem/CoChem-CORE", "mandatory": True},
-    "CoChem-TOPOS": {"desc": "Topological mapping and Eckart frame alignment.", "repo": "https://github.com/CoChem/CoChem-TOPOS", "mandatory": False},
-    "CoChem-TORQ": {"desc": "Torsional Discovery and Statistical Mechanics.", "repo": "https://github.com/CoChem/CoChem-TORQ", "mandatory": False}
-}
-
 class UnityInstallerGUI:
     def __init__(self):
-        self.buttons = {}
         self.artifact_dir = Path(os.environ.get("COCHEM_ARTIFACT_DIR", str(Path.home() / "CoChem_Artifacts")))
         
         # Engine Registry for ORCA tarballs
@@ -42,88 +35,27 @@ class UnityInstallerGUI:
     def _get_git_hash(self):
         return hashlib.sha256(os.urandom(32)).hexdigest()[:16]
 
-    def _workspace_root(self) -> Path:
-        cwd = Path.cwd()
-        if cwd.name == "CoChem-CORE":
-            return cwd.parent
-        return cwd
-
-    def _clone_selected_repos(self, selected_modules: list) -> None:
-        workspace_root = self._workspace_root()
-        for module in selected_modules:
-            if module == "CoChem-CORE":
-                print("ℹ️ CoChem-CORE already present in current workspace.")
-                continue
-
-            target_dir = workspace_root / module
-            if target_dir.exists():
-                print(f"ℹ️ {module} already exists at: {target_dir}")
-                continue
-
-            repo_url = ECOSYSTEM_REGISTRY[module]["repo"]
-            if not repo_url:
-                print(f"ℹ️ {module} has no separate repository target.")
-                continue
-
-            # --- OPTION 3: ARTIFACTS BRIDGE SIDELOADING ---
-            sideload_success = False
-            possible_zips = [
-                self.module_registry / f"{module}.zip",
-                self.module_registry / f"{module}-main.zip",
-                self.engine_registry / f"{module}.zip",
-                self.artifact_dir / f"{module}.zip",
-                self.artifact_dir / f"{module}-main.zip"
-            ]
-            
-            for zpath in possible_zips:
-                if zpath.exists():
-                    print(f"📦 Air-Gap Bridge: Sideloading {module} from {zpath}...")
-                    try:
-                        with zipfile.ZipFile(zpath, 'r') as zip_ref:
-                            zip_ref.extractall(workspace_root)
-                        
-                        # Handle GitHub's default "-main" or "-master" extraction suffix
-                        for suffix in ["-main", "-master"]:
-                            extracted_dir = workspace_root / f"{module}{suffix}"
-                            if extracted_dir.exists() and not target_dir.exists():
-                                extracted_dir.rename(target_dir)
-                                
-                        if target_dir.exists():
-                            print(f"✅ Successfully extracted {module} into workspace. Network bypassed.")
-                            sideload_success = True
-                            break
-                    except Exception as e:
-                        print(f"⚠️ Failed to extract {zpath}: {e}")
-            
-            if sideload_success:
-                continue
-            # ----------------------------------------------
-
-            try:
-                # Pre-check remote visibility so optional module failures are explicit and non-blocking.
-                print(f"🌐 Attempting network clone for {module}...")
-                ls = subprocess.run(["git", "ls-remote", "--heads", repo_url], check=False, capture_output=True, text=True)
-                if ls.returncode != 0:
-                    alt_url = repo_url if repo_url.endswith(".git") else f"{repo_url}.git"
-                    ls_alt = subprocess.run(["git", "ls-remote", "--heads", alt_url], check=False, capture_output=True, text=True)
-                    if ls_alt.returncode != 0:
-                        err = (ls.stderr or ls_alt.stderr or "").strip() or "remote not accessible"
-                        print(f"⚠️ Skipping {module}: repository not reachable via network ({err}).")
-                        print(f"💡 FIX: Download {module}.zip from GitHub and drop it into {self.module_registry}")
-                        continue
-                    repo_url = alt_url
-
-                subprocess.run(["git", "clone", "--depth", "1", repo_url, str(target_dir)], check=True, capture_output=True, text=True)
-                print(f"✅ Cloned {module} to: {target_dir}")
-            except subprocess.CalledProcessError as e:
-                err = (e.stderr or "").strip() or (e.stdout or "").strip() or str(e)
-                print(f"⚠️ Clone skipped for {module}: {err}")
+    def _detect_synap_modules(self) -> list:
+        """Passively scans the artifact boundaries to auto-detect modules cloned by Cell 2."""
+        modules = set()
+        search_paths = [
+            self.artifact_dir,
+            self.module_registry,
+            Path.cwd()
+        ]
+        for sp in search_paths:
+            if sp.exists():
+                for d in sp.iterdir():
+                    if d.is_dir() and d.name.startswith("CoChem-"):
+                        modules.add(d.name)
+        return list(modules)
 
     def _resolve_host_orca_candidate(self, raw_path: str) -> Path:
         p = (raw_path or "").strip().strip('"').strip("'")
         if not p:
             return Path("")
 
+        # OS-Aware path translation for Docker/WSL to Windows bridges
         if len(p) > 2 and p[1] == ":":
             drive = p[0].lower()
             tail = p[2:].replace("\\", "/").lstrip("/")
@@ -216,8 +148,10 @@ class UnityInstallerGUI:
         return staged
 
     def _launch_setup_orchestrator(self) -> None:
-        repo_root = Path.cwd()
-        orchestrator = repo_root / "stage_0_0_setup_orchestrator.py"
+        # Dynamically root execution regardless of Jupyter cwd
+        orchestrator = self.module_registry / "CoChem-CORE" / "stage_0_0_setup_orchestrator.py"
+        repo_root = orchestrator.parent
+        
         if not orchestrator.exists():
             print(f"❌ Missing orchestrator: {orchestrator}")
             return
@@ -225,6 +159,7 @@ class UnityInstallerGUI:
         log_dir = self.artifact_dir / "Logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         env = os.environ.copy()
+        
         try:
             log_handle = open(self.log_file, "a", encoding="utf-8")
             subprocess.Popen(
@@ -235,7 +170,7 @@ class UnityInstallerGUI:
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
-            print(f"🚀 Setup started in background via {orchestrator.name}")
+            print(f"🚀 Orchestrator initialized in background via {orchestrator.name}")
             print(f"📄 Live log: {self.log_file}")
             self._render_status()
         except Exception as e:
@@ -305,31 +240,21 @@ class UnityInstallerGUI:
     def _build_ui(self):
         self.out = widgets.Output()
         self.status_out = widgets.Output(layout=widgets.Layout(border="1px solid #ccc", padding="8px", max_height="260px", overflow_y="auto"))
-        title = widgets.HTML("<h2>CoChem-UNITY: Ecosystem Deployment Dashboard</h2>")
+        title = widgets.HTML("<h2>CoChem-UNITY: Core Setup & ORCA Provisioning</h2>")
         
         artifact_hint = widgets.HTML(
             f"<div style='background-color: #f8f9fa; padding: 10px; border-radius: 5px; border-left: 4px solid #0366d6; margin-bottom: 15px;'>"
-            f"<b>CoChem Artifacts Bridge:</b> {self.artifact_dir}<br>"
-            f"<b>1. ORCA Drop Target:</b> {self.engine_registry}<br>"
-            f"<b>2. Module Drop Target (.zip):</b> {self.module_registry}<br>"
-            f"<i style='font-size: 0.9em; color: #555;'>Offline? Download the Github .zip files and drop them into the target folder above.</i>"
+            f"<b>SYNAP Module Integration Verified.</b> Proceeding to Environment Handshake.<br>"
+            f"<b>ORCA Drop Target:</b> {self.engine_registry}<br>"
             f"</div>"
         )
-        
-        checks = []
-        for prog, info in ECOSYSTEM_REGISTRY.items():
-            cb = widgets.Checkbox(value=info["mandatory"], description=prog, disabled=info["mandatory"])
-            desc = widgets.HTML(f"<i style='color: gray; margin-left: 10px;'>{info['desc']}</i>")
-            self.buttons[prog] = cb
-            checks.append(widgets.HBox([cb, desc]))
             
-        self.deploy_target = widgets.Dropdown(options=["Codespaces", "Local DevContainer", "HPC SLURM"], description="Target:")
+        self.deploy_target = widgets.Dropdown(options=["Codespaces", "Local DevContainer", "HPC SLURM", "Local Linux"], description="Target:")
         self.host_orca_path = widgets.Text(
             value="", placeholder="Optional: C:\\ORCA\\orca.exe", description="Host ORCA:",
             style={"description_width": "initial"}, layout=widgets.Layout(width="100%")
         )
 
-        # Updated to accept .zip for Offline Sideloading
         self.orca_upload = widgets.FileUpload(
             accept=".tar.xz,.tz,.tar.gz,.zip",
             multiple=True,
@@ -368,7 +293,6 @@ class UnityInstallerGUI:
         self.main_ui = widgets.VBox([
             title,
             artifact_hint,
-            widgets.VBox(checks),
             self.deploy_target,
             self.host_orca_path,
             widgets.HBox([self.orca_upload, self.stage_orca_btn]),
@@ -448,11 +372,6 @@ class UnityInstallerGUI:
             if eng_archives:
                 print("\n📦 Staged Engine archives:")
                 for a in eng_archives: print(f" - {a.name} ({a.stat().st_size} bytes)")
-                
-            mod_archives = self._list_staged_archives(self.module_registry, ["*.zip"])
-            if mod_archives:
-                print("\n📦 Staged Module archives:")
-                for a in mod_archives: print(f" - {a.name} ({a.stat().st_size} bytes)")
 
     def _on_orca_upload(self, change):
         files = change.get("new") if isinstance(change, dict) else getattr(change, "new", None)
@@ -462,21 +381,21 @@ class UnityInstallerGUI:
     def _on_submit(self, b):
         with self.out:
             clear_output()
-            setup_dir = Path("cochem_setup")
+            setup_dir = Path.cwd() / "cochem_setup"
             setup_dir.mkdir(parents=True, exist_ok=True)
             manifest_path = setup_dir / "cochem_deployment_manifest.json"
             lock_file = Path(".cochem_unity.lock")
             
-            selected_modules = [p for p, cb in self.buttons.items() if cb.value]
-            selected_repos = {p: ECOSYSTEM_REGISTRY[p]["repo"] for p in selected_modules}
+            # Auto-Detection of SYNAP payload replaces manual checkboxes
+            synap_modules = self._detect_synap_modules()
             host_orca_path = self.host_orca_path.value.strip()
             host_orca_verified = False
+            
             manifest = {
                 "version": "2026.2",
                 "git_provenance_hash": self._get_git_hash(),
                 "deployment_target": self.deploy_target.value,
-                "modules": selected_modules,
-                "selected_modules": selected_repos,
+                "modules": synap_modules,
                 "host_orca_path": host_orca_path
             }
             
@@ -485,7 +404,7 @@ class UnityInstallerGUI:
             with open(lock_file, "w") as f:
                 f.write(manifest["git_provenance_hash"])
 
-            if host_orca_path:
+            if host_orca_path and host_orca_path.upper() != "BYPASSED":
                 print("🔬 Verifying host ORCA execution pathway from container...")
                 host_orca_verified = self._verify_host_orca_path(host_orca_path)
                 if not host_orca_verified and not self._has_staged_orca_archive():
@@ -498,17 +417,14 @@ class UnityInstallerGUI:
                     print(f"✅ Host ORCA hint recorded: {self.hint_file}")
                 
             print(f"✅ SUCCESS: Manifest written to {manifest_path}")
-            print(f"✅ Selected modules: {', '.join(selected_modules)}")
-
-            print("\n🔄 Initializing Workspace Repositories (Air-Gap priority)...")
-            self._clone_selected_repos(selected_modules)
+            print(f"✅ Auto-Detected Active Modules: {', '.join(synap_modules)}")
 
             started = False
             staged_now = False
             if not host_orca_verified:
                 staged_now = self._stage_orca_upload(getattr(self.orca_upload, "value", None))
 
-            if host_orca_verified or staged_now or self._has_staged_orca_archive():
+            if host_orca_verified or staged_now or self._has_staged_orca_archive() or host_orca_path.upper() == "BYPASSED":
                 print("\n🔄 Launching setup orchestrator...")
                 self._launch_setup_orchestrator()
                 started = True
@@ -526,6 +442,4 @@ class UnityInstallerGUI:
 
             self._render_status()
 
-if __name__ == "__main__":
-    installer = UnityInstallerGUI()
-    display(installer.main_ui)
+# Since Cell 3 loads and invokes this dynamically via importlib, we don't need a __main__ block

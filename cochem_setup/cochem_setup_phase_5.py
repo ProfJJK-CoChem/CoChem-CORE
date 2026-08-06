@@ -21,7 +21,8 @@ from logging.handlers import RotatingFileHandler
 # ---------------------------------------------------------
 # TORQ SILO INTERCEPT & RELAUNCH
 # ---------------------------------------------------------
-if "cochem_torq_silo" not in sys.executable:
+# INJECTED FIX: Added COCHEM_SILO_REROUTE_LOCK to prevent infinite subprocess recursion (fork bomb)
+if "cochem_torq_silo" not in sys.executable and os.environ.get("COCHEM_SILO_REROUTE_LOCK") != "1":
     _home = Path.home()
     _silo_candidates = [
         _home / ".local" / "miniconda" / "envs" / "cochem_torq_silo" / "bin" / "python",
@@ -36,7 +37,9 @@ if "cochem_torq_silo" not in sys.executable:
         if _candidate.exists():
             print(f"🔄 Intercepted naked Python execution. Rerouting Phase 5 into TORQ Silo: {_candidate}")
             try:
-                res = subprocess.run([str(_candidate), __file__] + sys.argv[1:])
+                env = os.environ.copy()
+                env["COCHEM_SILO_REROUTE_LOCK"] = "1"
+                res = subprocess.run([str(_candidate), __file__] + sys.argv[1:], env=env)
                 sys.exit(res.returncode)
             except Exception as e:
                 print(f"⚠️ Failed to relaunch into TORQ silo: {e}")
@@ -54,11 +57,13 @@ try:
 except ImportError as e:
     try:
         print("➡️  Attempting inline Pydantic bootstrap for Golden Gatekeeper...")
+        # INJECTED FIX: Added explicit timeout to prevent silent network hangs
         subprocess.run(
             [sys.executable, "-m", "pip", "install", "pydantic"],
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            timeout=60
         )
         importlib.invalidate_caches()
         importlib.reload(site)
@@ -68,6 +73,9 @@ except ImportError as e:
         )
         PYDANTIC_ACTIVE = True
         print("✅ Pydantic bootstrap completed for Phase 5 schema validation.")
+    except subprocess.TimeoutExpired:
+        PYDANTIC_ACTIVE = False
+        print("⚠️ Pydantic bootstrap timed out after 60 seconds. Network or pip hang detected. Bypassing...")
     except Exception as bootstrap_err:
         PYDANTIC_ACTIVE = False
         print(f"⚠️ Pydantic Registry Schemas not found in core_engine. Using strict dictionary fallback.\n(Import Error: {e} | Bootstrap Error: {bootstrap_err})")

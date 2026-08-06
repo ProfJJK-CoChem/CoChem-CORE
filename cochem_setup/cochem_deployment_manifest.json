@@ -1,5 +1,6 @@
 {
     "version": "2026.2",
+    "git_provenance_hash": "fb7e1e569aaf1b70",
     "deployment_target": "Local DevContainer",
     "modules": [
         "CoChem-CORE",
@@ -11,5 +12,5 @@
         "CoChem-TOPOS": "https://github.com/CoChem/CoChem-TOPOS",
         "CoChem-TORQ": "https://github.com/CoChem/CoChem-TORQ"
     },
-    "host_orca_path": ""
+    "host_orca_path": "/home/joshua/orca_6_1_1_avx2/orca.exe"
 }
